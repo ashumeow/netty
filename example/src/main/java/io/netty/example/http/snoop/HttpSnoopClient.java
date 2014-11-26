@@ -23,7 +23,8 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.ClientCookieEncoder;
 import io.netty.handler.codec.http.DefaultCookie;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
-import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpVersion;
@@ -36,17 +37,14 @@ import java.net.URI;
  * A simple HTTP client that prints out the content of the HTTP response to
  * {@link System#out} to test {@link HttpSnoopServer}.
  */
-public class HttpSnoopClient {
+public final class HttpSnoopClient {
 
-    private final URI uri;
+    static final String URL = System.getProperty("url", "http://127.0.0.1:8080/");
 
-    public HttpSnoopClient(URI uri) {
-        this.uri = uri;
-    }
-
-    public void run() throws Exception {
+    public static void main(String[] args) throws Exception {
+        URI uri = new URI(URL);
         String scheme = uri.getScheme() == null? "http" : uri.getScheme();
-        String host = uri.getHost() == null? "localhost" : uri.getHost();
+        String host = uri.getHost() == null? "127.0.0.1" : uri.getHost();
         int port = uri.getPort();
         if (port == -1) {
             if ("http".equalsIgnoreCase(scheme)) {
@@ -61,8 +59,9 @@ public class HttpSnoopClient {
             return;
         }
 
+        // Configure SSL context if necessary.
+        final boolean ssl = "https".equalsIgnoreCase(scheme);
         final SslContext sslCtx;
-        boolean ssl = "https".equalsIgnoreCase(scheme);
         if (ssl) {
             sslCtx = SslContext.newClientContext(InsecureTrustManagerFactory.INSTANCE);
         } else {
@@ -83,13 +82,13 @@ public class HttpSnoopClient {
             // Prepare the HTTP request.
             HttpRequest request = new DefaultFullHttpRequest(
                     HttpVersion.HTTP_1_1, HttpMethod.GET, uri.getRawPath());
-            request.headers().set(HttpHeaders.Names.HOST, host);
-            request.headers().set(HttpHeaders.Names.CONNECTION, HttpHeaders.Values.CLOSE);
-            request.headers().set(HttpHeaders.Names.ACCEPT_ENCODING, HttpHeaders.Values.GZIP);
+            request.headers().set(HttpHeaderNames.HOST, host);
+            request.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+            request.headers().set(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
 
             // Set some example cookies.
             request.headers().set(
-                    HttpHeaders.Names.COOKIE,
+                    HttpHeaderNames.COOKIE,
                     ClientCookieEncoder.encode(
                             new DefaultCookie("my-cookie", "foo"),
                             new DefaultCookie("another-cookie", "bar")));
@@ -103,17 +102,5 @@ public class HttpSnoopClient {
             // Shut down executor threads to exit.
             group.shutdownGracefully();
         }
-    }
-
-    public static void main(String[] args) throws Exception {
-        if (args.length != 1) {
-            System.err.println(
-                    "Usage: " + HttpSnoopClient.class.getSimpleName() +
-                    " <URL>");
-            return;
-        }
-
-        URI uri = new URI(args[0]);
-        new HttpSnoopClient(uri).run();
     }
 }

@@ -17,7 +17,6 @@
 package io.netty.bootstrap;
 
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelException;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
@@ -26,7 +25,9 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.ReflectiveChannelFactory;
 import io.netty.util.AttributeKey;
+import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.internal.StringUtil;
 
@@ -46,6 +47,7 @@ import java.util.Map;
 public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C extends Channel> implements Cloneable {
 
     private volatile EventLoopGroup group;
+    @SuppressWarnings("deprecation")
     private volatile ChannelFactory<? extends C> channelFactory;
     private volatile SocketAddress localAddress;
     private final Map<ChannelOption<?>, Object> options = new LinkedHashMap<ChannelOption<?>, Object>();
@@ -87,23 +89,20 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
 
     /**
      * The {@link Class} which is used to create {@link Channel} instances from.
-     * You either use this or {@link #channelFactory(ChannelFactory)} if your
+     * You either use this or {@link #channelFactory(io.netty.channel.ChannelFactory)} if your
      * {@link Channel} implementation has no no-args constructor.
      */
     public B channel(Class<? extends C> channelClass) {
         if (channelClass == null) {
             throw new NullPointerException("channelClass");
         }
-        return channelFactory(new BootstrapChannelFactory<C>(channelClass));
+        return channelFactory(new ReflectiveChannelFactory<C>(channelClass));
     }
 
     /**
-     * {@link ChannelFactory} which is used to create {@link Channel} instances from
-     * when calling {@link #bind()}. This method is usually only used if {@link #channel(Class)}
-     * is not working for you because of some more complex needs. If your {@link Channel} implementation
-     * has a no-args constructor, its highly recommend to just use {@link #channel(Class)} for
-     * simplify your code.
+     * @deprecated Use {@link #channelFactory(io.netty.channel.ChannelFactory)} instead.
      */
+    @Deprecated
     @SuppressWarnings("unchecked")
     public B channelFactory(ChannelFactory<? extends C> channelFactory) {
         if (channelFactory == null) {
@@ -118,8 +117,19 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     }
 
     /**
+     * {@link io.netty.channel.ChannelFactory} which is used to create {@link Channel} instances from
+     * when calling {@link #bind()}. This method is usually only used if {@link #channel(Class)}
+     * is not working for you because of some more complex needs. If your {@link Channel} implementation
+     * has a no-args constructor, its highly recommend to just use {@link #channel(Class)} for
+     * simplify your code.
+     */
+    @SuppressWarnings({ "unchecked", "deprecation" })
+    public B channelFactory(io.netty.channel.ChannelFactory<? extends C> channelFactory) {
+        return channelFactory((ChannelFactory<C>) channelFactory);
+    }
+
+    /**
      * The {@link SocketAddress} which is used to bind the local "end" to.
-     *
      */
     @SuppressWarnings("unchecked")
     public B localAddress(SocketAddress localAddress) {
@@ -275,22 +285,32 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             return regFuture;
         }
 
-        final ChannelPromise promise;
         if (regFuture.isDone()) {
-            promise = channel.newPromise();
+            // At this point we know that the registration was complete and succesful.
+            ChannelPromise promise = channel.newPromise();
             doBind0(regFuture, channel, localAddress, promise);
+            return promise;
         } else {
             // Registration future is almost always fulfilled already, but just in case it's not.
-            promise = new DefaultChannelPromise(channel, GlobalEventExecutor.INSTANCE);
+            final PendingRegistrationPromise promise = new PendingRegistrationPromise(channel);
             regFuture.addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future) throws Exception {
+                    Throwable cause = future.cause();
+                    if (cause != null) {
+                        // Registration on the EventLoop failed so fail the ChannelPromise directly to not cause an
+                        // IllegalStateException once we try to access the EventLoop of the Channel.
+                        promise.setFailure(cause);
+                    } else {
+                        // Registration was successful, so set the correct executor to use.
+                        // See https://github.com/netty/netty/issues/2586
+                        promise.executor = channel.eventLoop();
+                    }
                     doBind0(regFuture, channel, localAddress, promise);
                 }
             });
+            return promise;
         }
-
-        return promise;
     }
 
     final ChannelFuture initAndRegister() {
@@ -299,7 +319,8 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             init(channel);
         } catch (Throwable t) {
             channel.unsafe().closeForcibly();
-            return channel.newFailedFuture(t);
+            // as the Channel is not registered yet we need to force the usage of the GlobalEventExecutor
+            return new DefaultChannelPromise(channel, GlobalEventExecutor.INSTANCE).setFailure(t);
         }
 
         ChannelFuture regFuture = group().register(channel);
@@ -313,7 +334,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
 
         // If we are here and the promise is not failed, it's one of the following cases:
         // 1) If we attempted registration from the event loop, the registration has been completed at this point.
-        //    i.e. It's safe to attempt bind() or connect() now beause the channel has been registered.
+        //    i.e. It's safe to attempt bind() or connect() now because the channel has been registered.
         // 2) If we attempted registration from the other thread, the registration request has been successfully
         //    added to the event loop's task queue for later execution.
         //    i.e. It's safe to attempt bind() or connect() now:
@@ -359,6 +380,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
         return localAddress;
     }
 
+    @SuppressWarnings("deprecation")
     final ChannelFactory<? extends C> channelFactory() {
         return channelFactory;
     }
@@ -370,7 +392,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     /**
      * Return the configured {@link EventLoopGroup} or {@code null} if non is configured yet.
      */
-    public final EventLoopGroup group() {
+    public EventLoopGroup group() {
         return group;
     }
 
@@ -384,42 +406,42 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
 
     @Override
     public String toString() {
-        StringBuilder buf = new StringBuilder();
-        buf.append(StringUtil.simpleClassName(this));
-        buf.append('(');
+        StringBuilder buf = new StringBuilder()
+            .append(StringUtil.simpleClassName(this))
+            .append('(');
         if (group != null) {
-            buf.append("group: ");
-            buf.append(StringUtil.simpleClassName(group));
-            buf.append(", ");
+            buf.append("group: ")
+               .append(StringUtil.simpleClassName(group))
+               .append(", ");
         }
         if (channelFactory != null) {
-            buf.append("channelFactory: ");
-            buf.append(channelFactory);
-            buf.append(", ");
+            buf.append("channelFactory: ")
+               .append(channelFactory)
+               .append(", ");
         }
         if (localAddress != null) {
-            buf.append("localAddress: ");
-            buf.append(localAddress);
-            buf.append(", ");
+            buf.append("localAddress: ")
+               .append(localAddress)
+               .append(", ");
         }
         synchronized (options) {
             if (!options.isEmpty()) {
-                buf.append("options: ");
-                buf.append(options);
-                buf.append(", ");
+                buf.append("options: ")
+                   .append(options)
+                   .append(", ");
             }
         }
         synchronized (attrs) {
             if (!attrs.isEmpty()) {
-                buf.append("attrs: ");
-                buf.append(attrs);
-                buf.append(", ");
+                buf.append("attrs: ")
+                   .append(attrs)
+                   .append(", ");
             }
         }
         if (handler != null) {
-            buf.append("handler: ");
-            buf.append(handler);
-            buf.append(", ");
+            buf.append("handler: ")
+               .append(handler)
+               .append(", ");
         }
         if (buf.charAt(buf.length() - 1) == '(') {
             buf.append(')');
@@ -430,25 +452,26 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
         return buf.toString();
     }
 
-    private static final class BootstrapChannelFactory<T extends Channel> implements ChannelFactory<T> {
-        private final Class<? extends T> clazz;
+    private static final class PendingRegistrationPromise extends DefaultChannelPromise {
+        // Is set to the correct EventExecutor once the registration was successful. Otherwise it will
+        // stay null and so the GlobalEventExecutor.INSTANCE will be used for notifications.
+        private volatile EventExecutor executor;
 
-        BootstrapChannelFactory(Class<? extends T> clazz) {
-            this.clazz = clazz;
+        private PendingRegistrationPromise(Channel channel) {
+            super(channel);
         }
 
         @Override
-        public T newChannel() {
-            try {
-                return clazz.newInstance();
-            } catch (Throwable t) {
-                throw new ChannelException("Unable to create Channel from class " + clazz, t);
+        protected EventExecutor executor() {
+            EventExecutor executor = this.executor;
+            if (executor != null) {
+                // If the registration was a success executor is set.
+                //
+                // See https://github.com/netty/netty/issues/2586
+                return executor;
             }
-        }
-
-        @Override
-        public String toString() {
-            return StringUtil.simpleClassName(clazz) + ".class";
+            // The registration failed so we can only use the GlobalEventExecutor as last resort to notify.
+            return GlobalEventExecutor.INSTANCE;
         }
     }
 }

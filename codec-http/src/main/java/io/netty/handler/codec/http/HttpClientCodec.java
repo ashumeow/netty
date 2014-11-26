@@ -40,7 +40,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * @see HttpServerCodec
  */
-public final class HttpClientCodec extends ChannelHandlerAppender {
+public final class HttpClientCodec extends ChannelHandlerAppender implements
+        HttpClientUpgradeHandler.SourceCodec {
 
     /** A queue that is used for correlating a request and a response. */
     private final Queue<HttpMethod> queue = new ArrayDeque<HttpMethod>();
@@ -86,7 +87,27 @@ public final class HttpClientCodec extends ChannelHandlerAppender {
         this.failOnMissingResponse = failOnMissingResponse;
     }
 
-    private Decoder decoder() {
+    /**
+     * Upgrades to another protocol from HTTP. Removes the {@link Decoder} and {@link Encoder} from
+     * the pipeline.
+     */
+    @Override
+    public void upgradeFrom(ChannelHandlerContext ctx) {
+        ctx.pipeline().remove(Decoder.class);
+        ctx.pipeline().remove(Encoder.class);
+    }
+
+    /**
+     * Returns the encoder of this codec.
+     */
+    public HttpRequestEncoder encoder() {
+        return handlerAt(1);
+    }
+
+    /**
+     * Returns the decoder of this codec.
+     */
+    public HttpResponseDecoder decoder() {
         return handlerAt(0);
     }
 
@@ -104,7 +125,7 @@ public final class HttpClientCodec extends ChannelHandlerAppender {
         protected void encode(
                 ChannelHandlerContext ctx, Object msg, List<Object> out) throws Exception {
             if (msg instanceof HttpRequest && !done) {
-                queue.offer(((HttpRequest) msg).getMethod());
+                queue.offer(((HttpRequest) msg).method());
             }
 
             super.encode(ctx, msg, out);
@@ -160,7 +181,7 @@ public final class HttpClientCodec extends ChannelHandlerAppender {
 
         @Override
         protected boolean isContentAlwaysEmpty(HttpMessage msg) {
-            final int statusCode = ((HttpResponse) msg).getStatus().code();
+            final int statusCode = ((HttpResponse) msg).status().code();
             if (statusCode == 100) {
                 // 100-continue response should be excluded from paired comparison.
                 return true;

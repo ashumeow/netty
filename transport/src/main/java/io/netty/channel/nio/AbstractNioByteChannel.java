@@ -35,6 +35,11 @@ import java.nio.channels.SelectionKey;
  * {@link AbstractNioChannel} base class for {@link Channel}s that operate on bytes.
  */
 public abstract class AbstractNioByteChannel extends AbstractNioChannel {
+
+    private static final String EXPECTED_TYPES =
+            " (expected: " + StringUtil.simpleClassName(ByteBuf.class) + ", " +
+            StringUtil.simpleClassName(FileRegion.class) + ')';
+
     private Runnable flushTask;
 
     /**
@@ -53,7 +58,6 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
     }
 
     private final class NioByteUnsafe extends AbstractNioUnsafe {
-        private RecvByteBufAllocator.Handle allocHandle;
 
         private void closeOnRead(ChannelPipeline pipeline) {
             SelectionKey key = selectionKey();
@@ -97,10 +101,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             final ChannelPipeline pipeline = pipeline();
             final ByteBufAllocator allocator = config.getAllocator();
             final int maxMessagesPerRead = config.getMaxMessagesPerRead();
-            RecvByteBufAllocator.Handle allocHandle = this.allocHandle;
-            if (allocHandle == null) {
-                this.allocHandle = allocHandle = config.getRecvByteBufAllocator().newHandle();
-            }
+            RecvByteBufAllocator.Handle allocHandle = recvBufAllocHandle();
 
             ByteBuf byteBuf = null;
             int messages = 0;
@@ -218,27 +219,31 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 }
             } else if (msg instanceof FileRegion) {
                 FileRegion region = (FileRegion) msg;
+                boolean done = region.transfered() >= region.count();
                 boolean setOpWrite = false;
-                boolean done = false;
-                long flushedAmount = 0;
-                if (writeSpinCount == -1) {
-                    writeSpinCount = config().getWriteSpinCount();
-                }
-                for (int i = writeSpinCount - 1; i >= 0; i --) {
-                    long localFlushedAmount = doWriteFileRegion(region);
-                    if (localFlushedAmount == 0) {
-                        setOpWrite = true;
-                        break;
+
+                if (!done) {
+                    long flushedAmount = 0;
+                    if (writeSpinCount == -1) {
+                        writeSpinCount = config().getWriteSpinCount();
                     }
 
-                    flushedAmount += localFlushedAmount;
-                    if (region.transfered() >= region.count()) {
-                        done = true;
-                        break;
-                    }
-                }
+                    for (int i = writeSpinCount - 1; i >= 0; i--) {
+                        long localFlushedAmount = doWriteFileRegion(region);
+                        if (localFlushedAmount == 0) {
+                            setOpWrite = true;
+                            break;
+                        }
 
-                in.progress(flushedAmount);
+                        flushedAmount += localFlushedAmount;
+                        if (region.transfered() >= region.count()) {
+                            done = true;
+                            break;
+                        }
+                    }
+
+                    in.progress(flushedAmount);
+                }
 
                 if (done) {
                     in.remove();
@@ -247,9 +252,29 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                     break;
                 }
             } else {
-                throw new UnsupportedOperationException("unsupported message type: " + StringUtil.simpleClassName(msg));
+                // Should not reach here.
+                throw new Error();
             }
         }
+    }
+
+    @Override
+    protected final Object filterOutboundMessage(Object msg) {
+        if (msg instanceof ByteBuf) {
+            ByteBuf buf = (ByteBuf) msg;
+            if (buf.isDirect()) {
+                return msg;
+            }
+
+            return newDirectBuffer(buf);
+        }
+
+        if (msg instanceof FileRegion) {
+            return msg;
+        }
+
+        throw new UnsupportedOperationException(
+                "unsupported message type: " + StringUtil.simpleClassName(msg) + EXPECTED_TYPES);
     }
 
     protected final void incompleteWrite(boolean setOpWrite) {

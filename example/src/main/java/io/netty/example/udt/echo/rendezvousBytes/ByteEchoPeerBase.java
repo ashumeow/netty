@@ -21,12 +21,12 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.udt.UdtChannel;
 import io.netty.channel.udt.nio.NioUdtProvider;
-import io.netty.example.udt.util.UtilThreadFactory;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
+import io.netty.util.concurrent.DefaultExecutorServiceFactory;
+import io.netty.util.concurrent.ExecutorServiceFactory;
 
 import java.net.SocketAddress;
-import java.util.concurrent.ThreadFactory;
 
 /**
  * UDT Byte Stream Peer
@@ -38,9 +38,10 @@ import java.util.concurrent.ThreadFactory;
  * <p/>
  */
 public class ByteEchoPeerBase {
+
     protected final int messageSize;
-    protected SocketAddress myAddress;
-    protected SocketAddress peerAddress;
+    protected final SocketAddress myAddress;
+    protected final SocketAddress peerAddress;
 
     public ByteEchoPeerBase(int messageSize, SocketAddress myAddress, SocketAddress peerAddress) {
         this.messageSize = messageSize;
@@ -49,9 +50,10 @@ public class ByteEchoPeerBase {
     }
 
     public void run() throws Exception {
-        final ThreadFactory connectFactory = new UtilThreadFactory("rendezvous");
-        final NioEventLoopGroup connectGroup = new NioEventLoopGroup(1,
-                connectFactory, NioUdtProvider.BYTE_PROVIDER);
+        final ExecutorServiceFactory connectFactory = new DefaultExecutorServiceFactory("rendezvous");
+        final NioEventLoopGroup connectGroup =
+                new NioEventLoopGroup(1, connectFactory, NioUdtProvider.BYTE_PROVIDER);
+
         try {
             final Bootstrap bootstrap = new Bootstrap();
             bootstrap.group(connectGroup)

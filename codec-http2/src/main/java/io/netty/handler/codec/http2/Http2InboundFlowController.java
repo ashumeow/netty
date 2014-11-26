@@ -16,6 +16,7 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
 
 /**
  * Controls the inbound flow of data frames from the remote endpoint.
@@ -23,31 +24,21 @@ import io.netty.buffer.ByteBuf;
 public interface Http2InboundFlowController {
 
     /**
-     * A writer of window update frames.
+     * Applies inbound flow control to the given {@code DATA} frame.
+     *
+     * @param ctx the context from the handler where the frame was read.
+     * @param streamId the subject stream for the frame.
+     * @param data payload buffer for the frame.
+     * @param padding the number of padding bytes found at the end of the frame.
+     * @param endOfStream Indicates whether this is the last frame to be sent from the remote
+     *            endpoint for this stream.
      */
-    interface FrameWriter {
-
-        /**
-         * Writes a window update frame to the remote endpoint.
-         */
-        void writeFrame(int streamId, int windowSizeIncrement) throws Http2Exception;
-    }
-
-    /**
-     * Informs the flow controller of the existence of a new stream, allowing it to allocate
-     * resources as needed.
-     */
-    void addStream(int streamId);
-
-    /**
-     * Removes the given stream from flow control processing logic and frees resources as
-     * appropriate.
-     */
-    void removeStream(int streamId);
+    void applyFlowControl(ChannelHandlerContext ctx, int streamId, ByteBuf data, int padding,
+            boolean endOfStream) throws Http2Exception;
 
     /**
      * Sets the initial inbound flow control window size and updates all stream window sizes by the
-     * delta. This is called as part of the processing for an outbound SETTINGS frame.
+     * delta.
      *
      * @param newWindowSize the new initial window size.
      * @throws Http2Exception thrown if any protocol-related error occurred.
@@ -58,19 +49,4 @@ public interface Http2InboundFlowController {
      * Gets the initial inbound flow control window size.
      */
     int initialInboundWindowSize();
-
-    /**
-     * Applies flow control for the received data frame.
-     *
-     * @param streamId the ID of the stream receiving the data
-     * @param data the data portion of the data frame. Does not contain padding.
-     * @param padding the amount of padding received in the original frame.
-     * @param endOfStream indicates whether this is the last frame for the stream.
-     * @param endOfSegment indicates whether this is the last frame for the current segment.
-     * @param frameWriter allows this flow controller to send window updates to the remote endpoint.
-     * @throws Http2Exception thrown if any protocol-related error occurred.
-     */
-    void applyInboundFlowControl(int streamId, ByteBuf data, int padding, boolean endOfStream,
-            boolean endOfSegment, boolean compressed, FrameWriter frameWriter)
-            throws Http2Exception;
 }

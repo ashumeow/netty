@@ -15,6 +15,8 @@
 
 package io.netty.handler.codec.http2;
 
+import java.util.Collection;
+
 /**
  * A single stream within an HTTP2 connection. Streams are compared to each other by priority.
  */
@@ -44,11 +46,6 @@ public interface Http2Stream {
     State state();
 
     /**
-     * Verifies that the stream is in one of the given allowed states.
-     */
-    Http2Stream verifyState(Http2Error error, State... allowedStates) throws Http2Exception;
-
-    /**
      * If this is a reserved push stream, opens the stream for push in one direction.
      */
     Http2Stream openForPush() throws Http2Exception;
@@ -71,6 +68,58 @@ public interface Http2Stream {
     Http2Stream closeRemoteSide();
 
     /**
+     * Indicates whether a frame with {@code END_STREAM} set was received from the remote endpoint
+     * for this stream.
+     */
+    boolean isEndOfStreamReceived();
+
+    /**
+     * Sets the flag indicating that a frame with {@code END_STREAM} set was received from the
+     * remote endpoint for this stream.
+     */
+    Http2Stream endOfStreamReceived();
+
+    /**
+     * Indicates whether a frame with {@code END_STREAM} set was sent to the remote endpoint for
+     * this stream.
+     */
+    boolean isEndOfStreamSent();
+
+    /**
+     * Sets the flag indicating that a frame with {@code END_STREAM} set was sent to the remote
+     * endpoint for this stream.
+     */
+    Http2Stream endOfStreamSent();
+
+    /**
+     * Indicates whether a {@code RST_STREAM} frame has been received from the remote endpoint for this stream.
+     */
+    boolean isResetReceived();
+
+    /**
+     * Sets the flag indicating that a {@code RST_STREAM} frame has been received from the remote endpoint
+     * for this stream. This does not affect the stream state.
+     */
+    Http2Stream resetReceived();
+
+    /**
+     * Indicates whether a {@code RST_STREAM} frame has been sent from the local endpoint for this stream.
+     */
+    boolean isResetSent();
+
+    /**
+     * Sets the flag indicating that a {@code RST_STREAM} frame has been sent from the local endpoint
+     * for this stream. This does not affect the stream state.
+     */
+    Http2Stream resetSent();
+
+    /**
+     * Indicates whether or not this stream has been reset. This is a short form for
+     * {@link #isResetSent()} || {@link #isResetReceived()}.
+     */
+    boolean isReset();
+
+    /**
      * Indicates whether the remote side of this stream is open (i.e. the state is either
      * {@link State#OPEN} or {@link State#HALF_CLOSED_LOCAL}).
      */
@@ -81,4 +130,119 @@ public interface Http2Stream {
      * {@link State#OPEN} or {@link State#HALF_CLOSED_REMOTE}).
      */
     boolean localSideOpen();
+
+    /**
+     * Associates the application-defined data with this stream.
+     * @return The value that was previously associated with {@code key}, or {@code null} if there was none.
+     */
+    Object setProperty(Object key, Object value);
+
+    /**
+     * Returns application-defined data if any was associated with this stream.
+     */
+    <V> V getProperty(Object key);
+
+    /**
+     * Returns and removes application-defined data if any was associated with this stream.
+     */
+    <V> V removeProperty(Object key);
+
+    /**
+     * Gets the in-bound flow control state for this stream.
+     */
+    Http2FlowState inboundFlow();
+
+    /**
+     * Sets the in-bound flow control state for this stream.
+     */
+    void inboundFlow(Http2FlowState state);
+
+    /**
+     * Gets the out-bound flow control window for this stream.
+     */
+    Http2FlowState outboundFlow();
+
+    /**
+     * Sets the out-bound flow control window for this stream.
+     */
+    void outboundFlow(Http2FlowState state);
+
+    /**
+     * Gets the interface which allows bytes to be returned to the flow controller
+     */
+    Http2FlowControlWindowManager garbageCollector();
+
+    /**
+     * Sets the interface which allows bytes to be returned to the flow controller
+     */
+    void garbageCollector(Http2FlowControlWindowManager collector);
+
+    /**
+     * Updates an priority for this stream. Calling this method may affect the straucture of the
+     * priority tree.
+     *
+     * @param parentStreamId the parent stream that given stream should depend on. May be {@code 0},
+     *            if the stream has no dependencies and should be an immediate child of the
+     *            connection.
+     * @param weight the weight to be assigned to this stream relative to its parent. This value
+     *            must be between 1 and 256 (inclusive)
+     * @param exclusive indicates that the stream should be the exclusive dependent on its parent.
+     *            This only applies if the stream has a parent.
+     * @return this stream.
+     */
+    Http2Stream setPriority(int parentStreamId, short weight, boolean exclusive)
+            throws Http2Exception;
+
+    /**
+     * Indicates whether or not this stream is the root node of the priority tree.
+     */
+    boolean isRoot();
+
+    /**
+     * Indicates whether or not this is a leaf node (i.e. {@link #numChildren} is 0) of the priority tree.
+     */
+    boolean isLeaf();
+
+    /**
+     * Returns weight assigned to the dependency with the parent. The weight will be a value
+     * between 1 and 256.
+     */
+    short weight();
+
+    /**
+     * The total of the weights of all children of this stream.
+     */
+    int totalChildWeights();
+
+    /**
+     * The parent (i.e. the node in the priority tree on which this node depends), or {@code null}
+     * if this is the root node (i.e. the connection, itself).
+     */
+    Http2Stream parent();
+
+    /**
+     * Indicates whether or not this stream is a descendant in the priority tree from the given stream.
+     */
+    boolean isDescendantOf(Http2Stream stream);
+
+    /**
+     * Returns the number of child streams directly dependent on this stream.
+     */
+    int numChildren();
+
+    /**
+     * Indicates whether the given stream is a direct child of this stream.
+     */
+    boolean hasChild(int streamId);
+
+    /**
+     * Attempts to find a child of this stream with the given ID. If not found, returns
+     * {@code null}.
+     */
+    Http2Stream child(int streamId);
+
+    /**
+     * Gets all streams that are direct dependents on this stream.
+     */
+    Collection<? extends Http2Stream> children();
 }

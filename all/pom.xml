@@ -31,7 +31,7 @@
   <properties>
     <quickbuild>true</quickbuild>
     <generatedSourceDir>${project.build.directory}/src</generatedSourceDir>
-    <dependencyVersionDir>${project.build.directory}/versions</dependencyVersionDir>
+    <dependencyVersionsDir>${project.build.directory}/versions</dependencyVersionsDir>
   </properties>
 
   <profiles>
@@ -121,7 +121,42 @@
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
+      <artifactId>netty-codec-dns</artifactId>
+      <version>${project.version}</version>
+      <scope>compile</scope>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>netty-codec-haproxy</artifactId>
+      <version>${project.version}</version>
+      <scope>compile</scope>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
       <artifactId>netty-codec-http</artifactId>
+      <version>${project.version}</version>
+      <scope>compile</scope>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>netty-codec-http2</artifactId>
+      <version>${project.version}</version>
+      <scope>compile</scope>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>netty-codec-memcache</artifactId>
+      <version>${project.version}</version>
+      <scope>compile</scope>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>netty-codec-mqtt</artifactId>
       <version>${project.version}</version>
       <scope>compile</scope>
       <optional>true</optional>
@@ -135,7 +170,7 @@
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
-      <artifactId>netty-codec-memcache</artifactId>
+      <artifactId>netty-codec-stomp</artifactId>
       <version>${project.version}</version>
       <scope>compile</scope>
       <optional>true</optional>
@@ -150,6 +185,27 @@
     <dependency>
       <groupId>${project.groupId}</groupId>
       <artifactId>netty-handler</artifactId>
+      <version>${project.version}</version>
+      <scope>compile</scope>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>netty-handler-proxy</artifactId>
+      <version>${project.version}</version>
+      <scope>compile</scope>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>netty-resolver</artifactId>
+      <version>${project.version}</version>
+      <scope>compile</scope>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>netty-resolver-dns</artifactId>
       <version>${project.version}</version>
       <scope>compile</scope>
       <optional>true</optional>
@@ -256,7 +312,7 @@
             </goals>
             <configuration>
               <classifier>sources</classifier>
-              <includes>io/netty/**,META-INF/native/**</includes>
+              <includes>io/netty/**</includes>
               <includeGroupIds>${project.groupId}</includeGroupIds>
               <outputDirectory>${generatedSourceDir}</outputDirectory>
             </configuration>
@@ -270,8 +326,9 @@
               <goal>unpack-dependencies</goal>
             </goals>
             <configuration>
+              <excludes>io/netty/example/**,META-INF/native/libnetty-tcnative*</excludes>
               <includes>io/netty/**,META-INF/native/**</includes>
-              <excludes>io/netty/example/**</excludes>
+              <includeGroupIds>${project.groupId}</includeGroupIds>
               <outputDirectory>${project.build.outputDirectory}</outputDirectory>
             </configuration>
           </execution>
@@ -295,7 +352,7 @@
             <configuration>
               <target>
                 <taskdef resource="net/sf/antcontrib/antlib.xml" />
-                <propertyselector property="versions" match="^(${project.groupId}:(?!netty-example)[^:]+:jar)$" select="\1" />
+                <propertyselector property="versions" match="^(${project.groupId}:(?!netty-example)[^:]+:jar(?::[^:]+)?)$" select="\1" />
                 <for list="${versions}" param="x">
                   <sequential>
                     <unzip src="${@{x}}" dest="${dependencyVersionsDir}">
@@ -323,7 +380,7 @@
             <configuration>
               <target>
                 <delete dir="${generatedSourceDir}" quiet="true" />
-                <delete dir="${dependencyVersionDir}" quiet="true" />
+                <delete dir="${dependencyVersionsDir}" quiet="true" />
                 <delete dir="${project.build.outputDirectory}" quiet="true" />
               </target>
             </configuration>

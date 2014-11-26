@@ -132,7 +132,6 @@ public class ChannelHandlerAppender extends ChannelHandlerAdapter {
      *
      * @throws IllegalStateException if {@link ChannelHandlerAppender} has been added to the pipeline already
      */
-    @SuppressWarnings("unchecked")
     protected final ChannelHandlerAppender add(Iterable<? extends ChannelHandler> handlers) {
         if (handlers == null) {
             throw new NullPointerException("handlers");
@@ -181,7 +180,7 @@ public class ChannelHandlerAppender extends ChannelHandlerAdapter {
     public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
         added = true;
 
-        DefaultChannelHandlerContext dctx = (DefaultChannelHandlerContext) ctx;
+        AbstractChannelHandlerContext dctx = (AbstractChannelHandlerContext) ctx;
         DefaultChannelPipeline pipeline = (DefaultChannelPipeline) dctx.pipeline();
         String name = dctx.name();
         try {

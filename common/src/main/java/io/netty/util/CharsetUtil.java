@@ -15,11 +15,12 @@
  */
 package io.netty.util;
 
+import io.netty.util.internal.InternalThreadLocalMap;
+
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.CodingErrorAction;
-import java.util.IdentityHashMap;
 import java.util.Map;
 
 /**
@@ -60,21 +61,10 @@ public final class CharsetUtil {
      */
     public static final Charset US_ASCII = Charset.forName("US-ASCII");
 
-    private static final ThreadLocal<Map<Charset, CharsetEncoder>> encoders =
-        new ThreadLocal<Map<Charset, CharsetEncoder>>() {
-            @Override
-            protected Map<Charset, CharsetEncoder> initialValue() {
-                return new IdentityHashMap<Charset, CharsetEncoder>();
-            }
-        };
+    private static final Charset[] CHARSETS = new Charset[]
+            { UTF_16, UTF_16BE, UTF_16LE, UTF_8, ISO_8859_1, US_ASCII };
 
-    private static final ThreadLocal<Map<Charset, CharsetDecoder>> decoders =
-        new ThreadLocal<Map<Charset, CharsetDecoder>>() {
-            @Override
-            protected Map<Charset, CharsetDecoder> initialValue() {
-                return new IdentityHashMap<Charset, CharsetDecoder>();
-            }
-        };
+    public static Charset[] values() { return CHARSETS; }
 
     /**
      * Returns a cached thread-local {@link CharsetEncoder} for the specified
@@ -85,7 +75,7 @@ public final class CharsetUtil {
             throw new NullPointerException("charset");
         }
 
-        Map<Charset, CharsetEncoder> map = encoders.get();
+        Map<Charset, CharsetEncoder> map = InternalThreadLocalMap.get().charsetEncoderCache();
         CharsetEncoder e = map.get(charset);
         if (e != null) {
             e.reset();
@@ -110,7 +100,7 @@ public final class CharsetUtil {
             throw new NullPointerException("charset");
         }
 
-        Map<Charset, CharsetDecoder> map = decoders.get();
+        Map<Charset, CharsetDecoder> map = InternalThreadLocalMap.get().charsetDecoderCache();
         CharsetDecoder d = map.get(charset);
         if (d != null) {
             d.reset();
@@ -126,7 +116,5 @@ public final class CharsetUtil {
         return d;
     }
 
-    private CharsetUtil() {
-        // Unused
-    }
+    private CharsetUtil() { }
 }

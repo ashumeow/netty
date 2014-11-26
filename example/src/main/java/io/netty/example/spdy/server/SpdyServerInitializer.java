@@ -19,10 +19,6 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslHandler;
-import org.eclipse.jetty.npn.NextProtoNego;
-
-import javax.net.ssl.SSLEngine;
 
 /**
  * Sets up the Netty pipeline
@@ -36,18 +32,10 @@ public class SpdyServerInitializer extends ChannelInitializer<SocketChannel> {
     }
 
     @Override
-    public void initChannel(SocketChannel ch) throws Exception {
+    public void initChannel(SocketChannel ch) {
         ChannelPipeline p = ch.pipeline();
-
-        SslHandler sslHandler = sslCtx.newHandler(ch.alloc());
-        SSLEngine engine = sslHandler.engine();
-        p.addLast("ssl", sslHandler);
-
-        // Setup NextProtoNego with our server provider
-        NextProtoNego.put(engine, new SpdyServerProvider());
-        NextProtoNego.debug = true;
-
+        p.addLast(sslCtx.newHandler(ch.alloc()));
         // Negotiates with the browser if SPDY or HTTP is going to be used
-        p.addLast("handler", new SpdyOrHttpHandler());
+        p.addLast(new SpdyOrHttpHandler());
     }
 }

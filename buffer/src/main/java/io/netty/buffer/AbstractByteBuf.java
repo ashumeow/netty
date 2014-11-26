@@ -38,7 +38,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
     static final ResourceLeakDetector<ByteBuf> leakDetector = new ResourceLeakDetector<ByteBuf>(ByteBuf.class);
 
     int readerIndex;
-    private int writerIndex;
+    int writerIndex;
     private int markedReaderIndex;
     private int markedWriterIndex;
 
@@ -245,7 +245,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
         }
 
         // Normalize the current capacity to the power of 2.
-        int newCapacity = calculateNewCapacity(writerIndex + minWritableBytes);
+        int newCapacity = alloc().calculateNewCapacity(writerIndex + minWritableBytes, maxCapacity);
 
         // Adjust to the new capacity.
         capacity(newCapacity);
@@ -275,39 +275,11 @@ public abstract class AbstractByteBuf extends ByteBuf {
         }
 
         // Normalize the current capacity to the power of 2.
-        int newCapacity = calculateNewCapacity(writerIndex + minWritableBytes);
+        int newCapacity = alloc().calculateNewCapacity(writerIndex + minWritableBytes, maxCapacity);
 
         // Adjust to the new capacity.
         capacity(newCapacity);
         return 2;
-    }
-
-    private int calculateNewCapacity(int minNewCapacity) {
-        final int maxCapacity = this.maxCapacity;
-        final int threshold = 1048576 * 4; // 4 MiB page
-
-        if (minNewCapacity == threshold) {
-            return threshold;
-        }
-
-        // If over threshold, do not double but just increase by threshold.
-        if (minNewCapacity > threshold) {
-            int newCapacity = minNewCapacity / threshold * threshold;
-            if (newCapacity > maxCapacity - threshold) {
-                newCapacity = maxCapacity;
-            } else {
-                newCapacity += threshold;
-            }
-            return newCapacity;
-        }
-
-        // Not over threshold. Double up to 4 MiB, starting from 64.
-        int newCapacity = 64;
-        while (newCapacity < minNewCapacity) {
-            newCapacity <<= 1;
-        }
-
-        return Math.min(newCapacity, maxCapacity);
     }
 
     @Override
@@ -321,9 +293,16 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
         SwappedByteBuf swappedBuf = this.swappedBuf;
         if (swappedBuf == null) {
-            this.swappedBuf = swappedBuf = new SwappedByteBuf(this);
+            this.swappedBuf = swappedBuf = newSwappedByteBuf();
         }
         return swappedBuf;
+    }
+
+    /**
+     * Creates a new {@link SwappedByteBuf} for this {@link ByteBuf} instance.
+     */
+    protected SwappedByteBuf newSwappedByteBuf() {
+        return new SwappedByteBuf(this);
     }
 
     @Override
@@ -732,14 +711,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
     @Override
     public ByteBuf skipBytes(int length) {
         checkReadableBytes(length);
-
-        int newReaderIndex = readerIndex + length;
-        if (newReaderIndex > writerIndex) {
-            throw new IndexOutOfBoundsException(String.format(
-                    "length: %d (expected: readerIndex(%d) + length <= writerIndex(%d))",
-                    length, readerIndex, writerIndex));
-        }
-        readerIndex = newReaderIndex;
+        readerIndex += length;
         return this;
     }
 
@@ -751,13 +723,15 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf writeByte(int value) {
+        ensureAccessible();
         ensureWritable(1);
-        setByte(writerIndex++, value);
+        _setByte(writerIndex++, value);
         return this;
     }
 
     @Override
     public ByteBuf writeShort(int value) {
+        ensureAccessible();
         ensureWritable(2);
         _setShort(writerIndex, value);
         writerIndex += 2;
@@ -766,6 +740,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf writeMedium(int value) {
+        ensureAccessible();
         ensureWritable(3);
         _setMedium(writerIndex, value);
         writerIndex += 3;
@@ -774,6 +749,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf writeInt(int value) {
+        ensureAccessible();
         ensureWritable(4);
         _setInt(writerIndex, value);
         writerIndex += 4;
@@ -782,6 +758,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf writeLong(long value) {
+        ensureAccessible();
         ensureWritable(8);
         _setLong(writerIndex, value);
         writerIndex += 8;
@@ -808,6 +785,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf writeBytes(byte[] src, int srcIndex, int length) {
+        ensureAccessible();
         ensureWritable(length);
         setBytes(writerIndex, src, srcIndex, length);
         writerIndex += length;
@@ -839,6 +817,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf writeBytes(ByteBuf src, int srcIndex, int length) {
+        ensureAccessible();
         ensureWritable(length);
         setBytes(writerIndex, src, srcIndex, length);
         writerIndex += length;
@@ -847,6 +826,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf writeBytes(ByteBuffer src) {
+        ensureAccessible();
         int length = src.remaining();
         ensureWritable(length);
         setBytes(writerIndex, src);
@@ -857,6 +837,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
     @Override
     public int writeBytes(InputStream in, int length)
             throws IOException {
+        ensureAccessible();
         ensureWritable(length);
         int writtenBytes = setBytes(writerIndex, in, length);
         if (writtenBytes > 0) {
@@ -867,6 +848,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public int writeBytes(ScatteringByteChannel in, int length) throws IOException {
+        ensureAccessible();
         ensureWritable(length);
         int writtenBytes = setBytes(writerIndex, in, length);
         if (writtenBytes > 0) {
@@ -990,6 +972,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
     public int forEachByte(ByteBufProcessor processor) {
         int index = readerIndex;
         int length = writerIndex - index;
+        ensureAccessible();
         return forEachByteAsc0(index, length, processor);
     }
 
@@ -1029,16 +1012,19 @@ public abstract class AbstractByteBuf extends ByteBuf {
     public int forEachByteDesc(ByteBufProcessor processor) {
         int index = readerIndex;
         int length = writerIndex - index;
+        ensureAccessible();
         return forEachByteDesc0(index, length, processor);
     }
 
     @Override
     public int forEachByteDesc(int index, int length, ByteBufProcessor processor) {
         checkIndex(index, length);
+
         return forEachByteDesc0(index, length, processor);
     }
 
     private int forEachByteDesc0(int index, int length, ByteBufProcessor processor) {
+
         if (processor == null) {
             throw new NullPointerException("processor");
         }
@@ -1090,23 +1076,18 @@ public abstract class AbstractByteBuf extends ByteBuf {
             return StringUtil.simpleClassName(this) + "(freed)";
         }
 
-        StringBuilder buf = new StringBuilder();
-        buf.append(StringUtil.simpleClassName(this));
-        buf.append("(ridx: ");
-        buf.append(readerIndex);
-        buf.append(", widx: ");
-        buf.append(writerIndex);
-        buf.append(", cap: ");
-        buf.append(capacity());
+        StringBuilder buf = new StringBuilder()
+            .append(StringUtil.simpleClassName(this))
+            .append("(ridx: ").append(readerIndex)
+            .append(", widx: ").append(writerIndex)
+            .append(", cap: ").append(capacity());
         if (maxCapacity != Integer.MAX_VALUE) {
-            buf.append('/');
-            buf.append(maxCapacity);
+            buf.append('/').append(maxCapacity);
         }
 
         ByteBuf unwrapped = unwrap();
         if (unwrapped != null) {
-            buf.append(", unwrapped: ");
-            buf.append(unwrapped);
+            buf.append(", unwrapped: ").append(unwrapped);
         }
         buf.append(')');
         return buf.toString();

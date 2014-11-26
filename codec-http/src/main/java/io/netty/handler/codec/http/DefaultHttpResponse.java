@@ -21,7 +21,7 @@ import io.netty.util.internal.StringUtil;
  * The default {@link HttpResponse} implementation.
  */
 public class DefaultHttpResponse extends DefaultHttpMessage implements HttpResponse {
-
+    private static final int HASH_CODE_PRIME = 31;
     private HttpResponseStatus status;
 
     /**
@@ -50,7 +50,7 @@ public class DefaultHttpResponse extends DefaultHttpMessage implements HttpRespo
     }
 
     @Override
-    public HttpResponseStatus getStatus() {
+    public HttpResponseStatus status() {
         return status;
     }
 
@@ -70,21 +70,44 @@ public class DefaultHttpResponse extends DefaultHttpMessage implements HttpRespo
     }
 
     @Override
+    public int hashCode() {
+        int result = 1;
+        result = HASH_CODE_PRIME * result + status.hashCode();
+        result = HASH_CODE_PRIME * result + super.hashCode();
+        return result;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (!(o instanceof DefaultHttpResponse)) {
+            return false;
+        }
+
+        DefaultHttpResponse other = (DefaultHttpResponse) o;
+
+        return status().equals(other.status()) && super.equals(o);
+    }
+
+    @Override
     public String toString() {
         StringBuilder buf = new StringBuilder();
-        buf.append(StringUtil.simpleClassName(this));
-        buf.append("(decodeResult: ");
-        buf.append(getDecoderResult());
-        buf.append(')');
-        buf.append(StringUtil.NEWLINE);
-        buf.append(getProtocolVersion().text());
-        buf.append(' ');
-        buf.append(getStatus().toString());
-        buf.append(StringUtil.NEWLINE);
-        appendHeaders(buf);
+        appendAll(buf);
 
         // Remove the last newline.
         buf.setLength(buf.length() - StringUtil.NEWLINE.length());
         return buf.toString();
+    }
+
+    void appendAll(StringBuilder buf) {
+        buf.append(StringUtil.simpleClassName(this));
+        buf.append("(decodeResult: ");
+        buf.append(decoderResult());
+        buf.append(')');
+        buf.append(StringUtil.NEWLINE);
+        buf.append(protocolVersion().text());
+        buf.append(' ');
+        buf.append(status());
+        buf.append(StringUtil.NEWLINE);
+        appendHeaders(buf);
     }
 }

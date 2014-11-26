@@ -87,9 +87,7 @@ public final class UnitHelp {
 
         final long timeFinish = System.currentTimeMillis();
 
-        final long timeDiff = timeFinish - timeStart;
-
-        return timeDiff;
+        return timeFinish - timeStart;
     }
 
     /**
@@ -193,11 +191,11 @@ public final class UnitHelp {
      * Display current OS/ARCH.
      */
     public static void logOsArch() {
-        final StringBuilder text = new StringBuilder(1024);
-        text.append("\n\t");
-        text.append(System.getProperty("os.name"));
-        text.append("\n\t");
-        text.append(System.getProperty("os.arch"));
+        final StringBuilder text = new StringBuilder(1024)
+            .append("\n\t")
+            .append(System.getProperty("os.name"))
+            .append("\n\t")
+            .append(System.getProperty("os.arch"));
         log.info("\n\t[os/arch]{}", text);
     }
 
@@ -205,7 +203,7 @@ public final class UnitHelp {
      * Display contents of a set.
      */
     public static void logSet(final Set<?> set) {
-        @SuppressWarnings({ "rawtypes", "unchecked" })
+        @SuppressWarnings("unchecked")
         final TreeSet<?> treeSet = new TreeSet(set);
         for (final Object item : treeSet) {
             log.info("-> {}", item);

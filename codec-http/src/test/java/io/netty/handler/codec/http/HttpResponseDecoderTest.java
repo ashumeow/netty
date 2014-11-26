@@ -17,7 +17,6 @@ package io.netty.handler.codec.http;
 
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
-import io.netty.handler.codec.http.HttpHeaders.Names;
 import io.netty.util.CharsetUtil;
 import org.junit.Test;
 
@@ -35,8 +34,8 @@ public class HttpResponseDecoderTest {
                 CharsetUtil.US_ASCII));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
 
         byte[] data = new byte[64];
         for (int i = 0; i < data.length; i++) {
@@ -77,8 +76,8 @@ public class HttpResponseDecoderTest {
                 Unpooled.copiedBuffer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", CharsetUtil.US_ASCII));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
 
         byte[] data = new byte[64];
         for (int i = 0; i < data.length; i++) {
@@ -126,8 +125,8 @@ public class HttpResponseDecoderTest {
 
         // Read the response headers.
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
         assertThat(ch.readInbound(), is(nullValue()));
 
         // Close the connection without sending anything.
@@ -151,8 +150,8 @@ public class HttpResponseDecoderTest {
 
         // Read the response headers.
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
 
         // Read the partial content.
         HttpContent content = ch.readInbound();
@@ -182,9 +181,9 @@ public class HttpResponseDecoderTest {
 
         // Read the response headers.
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
-        assertThat(res.headers().get(Names.TRANSFER_ENCODING), is("chunked"));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
+        assertThat(res.headers().getAndConvert(HttpHeaderNames.TRANSFER_ENCODING), is("chunked"));
         assertThat(ch.readInbound(), is(nullValue()));
 
         // Close the connection without sending anything.
@@ -203,9 +202,9 @@ public class HttpResponseDecoderTest {
 
         // Read the response headers.
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
-        assertThat(res.headers().get(Names.TRANSFER_ENCODING), is("chunked"));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
+        assertThat(res.headers().getAndConvert(HttpHeaderNames.TRANSFER_ENCODING), is("chunked"));
 
         // Read the partial content.
         HttpContent content = ch.readInbound();
@@ -228,8 +227,8 @@ public class HttpResponseDecoderTest {
         ch.writeInbound(Unpooled.copiedBuffer("HTTP/1.1 200 OK\r\n\r\n", CharsetUtil.US_ASCII));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
         assertThat(ch.readInbound(), is(nullValue()));
 
         assertThat(ch.finish(), is(true));
@@ -247,8 +246,8 @@ public class HttpResponseDecoderTest {
         ch.writeInbound(Unpooled.copiedBuffer("HTTP/1.1 200 OK\r\n\r\n", CharsetUtil.US_ASCII));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
         assertThat(ch.readInbound(), is(nullValue()));
 
         ch.writeInbound(Unpooled.wrappedBuffer(new byte[1024]));
@@ -273,9 +272,9 @@ public class HttpResponseDecoderTest {
                 CharsetUtil.US_ASCII));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
-        assertThat(res.headers().get("X-Header"), is("h2=h2v2; Expires=Wed, 09-Jun-2021 10:18:14 GMT"));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
+        assertThat(res.headers().getAndConvert("X-Header"), is("h2=h2v2; Expires=Wed, 09-Jun-2021 10:18:14 GMT"));
         assertThat(ch.readInbound(), is(nullValue()));
 
         ch.writeInbound(Unpooled.wrappedBuffer(new byte[1024]));
@@ -306,14 +305,14 @@ public class HttpResponseDecoderTest {
                 CharsetUtil.US_ASCII));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
 
         LastHttpContent lastContent = ch.readInbound();
         assertThat(lastContent.content().isReadable(), is(false));
         HttpHeaders headers = lastContent.trailingHeaders();
         assertEquals(1, headers.names().size());
-        List<String> values = headers.getAll("Set-Cookie");
+        List<CharSequence> values = headers.getAll("Set-Cookie");
         assertEquals(2, values.size());
         assertTrue(values.contains("t1=t1v1"));
         assertTrue(values.contains("t2=t2v2; Expires=Wed, 09-Jun-2021 10:18:14 GMT"));
@@ -356,14 +355,14 @@ public class HttpResponseDecoderTest {
 
         ch.writeInbound(Unpooled.wrappedBuffer(content, headerLength, content.length - headerLength));
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
 
         LastHttpContent lastContent = ch.readInbound();
         assertThat(lastContent.content().isReadable(), is(false));
         HttpHeaders headers = lastContent.trailingHeaders();
         assertEquals(1, headers.names().size());
-        List<String> values = headers.getAll("Set-Cookie");
+        List<CharSequence> values = headers.getAll("Set-Cookie");
         assertEquals(2, values.size());
         assertTrue(values.contains("t1=t1v1"));
         assertTrue(values.contains("t2=t2v2; Expires=Wed, 09-Jun-2021 10:18:14 GMT"));
@@ -389,8 +388,8 @@ public class HttpResponseDecoderTest {
         ch.writeInbound(Unpooled.wrappedBuffer(data, 5, data.length / 2));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
 
         HttpContent firstContent = ch.readInbound();
         assertThat(firstContent.content().readableBytes(), is(5));
@@ -437,8 +436,8 @@ public class HttpResponseDecoderTest {
         ch.writeInbound(Unpooled.wrappedBuffer(data, 5, data.length / 2));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.OK));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.OK));
 
         HttpContent firstContent = ch.readInbound();
         assertThat(firstContent.content().readableBytes(), is(5));
@@ -467,8 +466,8 @@ public class HttpResponseDecoderTest {
         ch.writeInbound(Unpooled.wrappedBuffer(data));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.SWITCHING_PROTOCOLS));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.SWITCHING_PROTOCOLS));
         HttpContent content = ch.readInbound();
         assertThat(content.content().readableBytes(), is(16));
         content.release();
@@ -494,8 +493,8 @@ public class HttpResponseDecoderTest {
         ch.writeInbound(Unpooled.wrappedBuffer(data, otherData));
 
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
-        assertThat(res.getStatus(), is(HttpResponseStatus.SWITCHING_PROTOCOLS));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_1));
+        assertThat(res.status(), is(HttpResponseStatus.SWITCHING_PROTOCOLS));
         HttpContent content = ch.readInbound();
         assertThat(content.content().readableBytes(), is(16));
         content.release();
@@ -522,10 +521,10 @@ public class HttpResponseDecoderTest {
 
         // Garbage input should generate the 999 Unknown response.
         HttpResponse res = ch.readInbound();
-        assertThat(res.getProtocolVersion(), sameInstance(HttpVersion.HTTP_1_0));
-        assertThat(res.getStatus().code(), is(999));
-        assertThat(res.getDecoderResult().isFailure(), is(true));
-        assertThat(res.getDecoderResult().isFinished(), is(true));
+        assertThat(res.protocolVersion(), sameInstance(HttpVersion.HTTP_1_0));
+        assertThat(res.status().code(), is(999));
+        assertThat(res.decoderResult().isFailure(), is(true));
+        assertThat(res.decoderResult().isFinished(), is(true));
         assertThat(ch.readInbound(), is(nullValue()));
 
         // More garbage should not generate anything (i.e. the decoder discards anything beyond this point.)
@@ -554,7 +553,7 @@ public class HttpResponseDecoderTest {
 
         // Ensure that the decoder generates the last chunk with correct decoder result.
         LastHttpContent invalidChunk = channel.readInbound();
-        assertThat(invalidChunk.getDecoderResult().isFailure(), is(true));
+        assertThat(invalidChunk.decoderResult().isFailure(), is(true));
         invalidChunk.release();
 
         // And no more messages should be produced by the decoder.

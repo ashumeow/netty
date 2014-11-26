@@ -15,130 +15,121 @@
 package io.netty.example.http2.client;
 
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.example.http2.server.Http2Server;
-import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http2.DefaultHttp2Headers;
-import io.netty.handler.codec.http2.Http2Exception;
-import io.netty.handler.codec.http2.Http2Headers;
+import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http2.Http2OrHttpChooser.SelectedProtocol;
+import io.netty.handler.codec.http2.Http2SecurityUtil;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import io.netty.util.CharsetUtil;
 
-import javax.net.ssl.SSLException;
-import java.net.InetSocketAddress;
-import java.util.concurrent.BlockingQueue;
+import java.net.URI;
+import java.util.concurrent.TimeUnit;
 
-import static java.util.concurrent.TimeUnit.*;
+import static io.netty.handler.codec.http.HttpMethod.*;
+import static io.netty.handler.codec.http.HttpVersion.*;
 
 /**
  * An HTTP2 client that allows you to send HTTP2 frames to a server. Inbound and outbound frames are
- * logged.
+ * logged. When run from the command-line, sends a single HEADERS frame to the server and gets back
+ * a "Hello World" response.
  */
-public class Http2Client {
+public final class Http2Client {
 
-    private final SslContext sslCtx;
-    private final String host;
-    private final int port;
-    private final Http2ClientConnectionHandler http2ConnectionHandler;
-    private Channel channel;
-    private EventLoopGroup workerGroup;
+    static final boolean SSL = System.getProperty("ssl") != null;
+    static final String HOST = System.getProperty("host", "127.0.0.1");
+    static final int PORT = Integer.parseInt(System.getProperty("port", SSL? "8443" : "8080"));
+    static final String URL = System.getProperty("url", "/whatever");
+    static final String URL2 = System.getProperty("url2");
+    static final String URL2DATA = System.getProperty("url2data", "test data!");
 
-    public Http2Client(String host, int port) throws SSLException {
-        sslCtx = SslContext.newClientContext(InsecureTrustManagerFactory.INSTANCE);
-        this.host = host;
-        this.port = port;
-        http2ConnectionHandler = new Http2ClientConnectionHandler();
-    }
-
-    public void start() throws Exception {
-        if (channel != null) {
-            System.out.println("Already running!");
-            return;
+    public static void main(String[] args) throws Exception {
+        // Configure SSL.
+        final SslContext sslCtx;
+        if (SSL) {
+            sslCtx = SslContext.newClientContext(SslProvider.JDK,
+                    null, InsecureTrustManagerFactory.INSTANCE,
+                    Http2SecurityUtil.CIPHERS,
+                    /* NOTE: the following filter may not include all ciphers required by the HTTP/2 specification
+                     * Please refer to the HTTP/2 specification for cipher requirements. */
+                    SupportedCipherSuiteFilter.INSTANCE,
+                    new ApplicationProtocolConfig(
+                            Protocol.ALPN,
+                            SelectorFailureBehavior.FATAL_ALERT,
+                            SelectedListenerFailureBehavior.FATAL_ALERT,
+                            SelectedProtocol.HTTP_2.protocolName(),
+                            SelectedProtocol.HTTP_1_1.protocolName()),
+                    0, 0);
+        } else {
+            sslCtx = null;
         }
 
-        workerGroup = new NioEventLoopGroup();
+        EventLoopGroup workerGroup = new NioEventLoopGroup();
+        Http2ClientInitializer initializer = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
 
-        Bootstrap b = new Bootstrap();
-        b.group(workerGroup);
-        b.channel(NioSocketChannel.class);
-        b.option(ChannelOption.SO_KEEPALIVE, true);
-        b.remoteAddress(new InetSocketAddress(host, port));
-        b.handler(new Http2ClientInitializer(sslCtx, http2ConnectionHandler));
-
-        // Start the client.
-        channel = b.connect().syncUninterruptibly().channel();
-        http2ConnectionHandler.awaitInitialization();
-        System.out.println("Connected to [" + host + ':' + port + ']');
-    }
-
-    public void stop() {
         try {
+            // Configure the client.
+            Bootstrap b = new Bootstrap();
+            b.group(workerGroup);
+            b.channel(NioSocketChannel.class);
+            b.option(ChannelOption.SO_KEEPALIVE, true);
+            b.remoteAddress(HOST, PORT);
+            b.handler(initializer);
+
+            // Start the client.
+            Channel channel = b.connect().syncUninterruptibly().channel();
+            System.out.println("Connected to [" + HOST + ':' + PORT + ']');
+
+            // Wait for the HTTP/2 upgrade to occur.
+            Http2SettingsHandler http2SettingsHandler = initializer.settingsHandler();
+            http2SettingsHandler.awaitSettings(5, TimeUnit.SECONDS);
+
+            HttpResponseHandler responseHandler = initializer.responseHandler();
+            int streamId = 3;
+            URI hostName = URI.create((SSL ? "https" : "http") + "://" + HOST + ':' + PORT);
+            System.err.println("Sending request(s)...");
+            if (URL != null) {
+                // Create a simple GET request.
+                FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, GET, URL);
+                request.headers().addObject(HttpHeaderNames.HOST, hostName);
+                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
+                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.DEFLATE);
+                channel.writeAndFlush(request);
+                responseHandler.put(streamId, channel.newPromise());
+                streamId += 2;
+            }
+            if (URL2 != null) {
+                // Create a simple POST request with a body.
+                FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, POST, URL2,
+                                Unpooled.copiedBuffer(URL2DATA.getBytes(CharsetUtil.UTF_8)));
+                request.headers().addObject(HttpHeaderNames.HOST, hostName);
+                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
+                request.headers().add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.DEFLATE);
+                channel.writeAndFlush(request);
+                responseHandler.put(streamId, channel.newPromise());
+                streamId += 2;
+            }
+            responseHandler.awaitResponses(5, TimeUnit.SECONDS);
+            System.out.println("Finished HTTP/2 request(s)");
+
             // Wait until the connection is closed.
             channel.close().syncUninterruptibly();
         } finally {
-            if (workerGroup != null) {
-                workerGroup.shutdownGracefully();
-            }
-        }
-    }
-
-    public ChannelFuture sendHeaders(int streamId, Http2Headers headers) throws Http2Exception {
-        return http2ConnectionHandler.writeHeaders(streamId, headers, 0, true, true);
-    }
-
-    public ChannelFuture send(int streamId, ByteBuf data, int padding, boolean endStream,
-            boolean endSegment, boolean compressed) throws Http2Exception {
-        return http2ConnectionHandler.writeData(streamId, data, padding, endStream, endSegment,
-                compressed);
-    }
-
-    public Http2Headers headers() {
-        return DefaultHttp2Headers.newBuilder().authority(host).method(HttpMethod.GET.name())
-                .build();
-    }
-
-    public BlockingQueue<ChannelFuture> queue() {
-        return http2ConnectionHandler.queue();
-    }
-
-    public static void main(String[] args) throws Exception {
-        Http2Server.checkForNpnSupport();
-        int port;
-        if (args.length > 0) {
-            port = Integer.parseInt(args[0]);
-        } else {
-            port = 8443;
-        }
-
-        final Http2Client client = new Http2Client("localhost", port);
-
-        try {
-            client.start();
-            System.out.println("Sending headers...");
-            ChannelFuture requestFuture = client.sendHeaders(3, client.headers()).sync();
-            System.out.println("Back from sending headers...");
-            if (!requestFuture.isSuccess()) {
-                requestFuture.cause().printStackTrace();
-            }
-
-            // Waits for the complete response
-            ChannelFuture responseFuture = client.queue().poll(5, SECONDS);
-
-            if (!responseFuture.isSuccess()) {
-                responseFuture.cause().printStackTrace();
-            }
-
-            System.out.println("Finished HTTP/2 request");
-        } catch (Throwable t) {
-            t.printStackTrace();
-        } finally {
-            client.stop();
+            workerGroup.shutdownGracefully();
         }
     }
 }

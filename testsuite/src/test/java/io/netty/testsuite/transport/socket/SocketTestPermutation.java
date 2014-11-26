@@ -17,9 +17,9 @@ package io.netty.testsuite.transport.socket;
 
 import io.netty.bootstrap.AbstractBootstrap;
 import io.netty.bootstrap.Bootstrap;
-import io.netty.bootstrap.ChannelFactory;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFactory;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -33,6 +33,7 @@ import io.netty.channel.socket.oio.OioServerSocketChannel;
 import io.netty.channel.socket.oio.OioSocketChannel;
 import io.netty.testsuite.transport.TestsuitePermutation.BootstrapComboFactory;
 import io.netty.testsuite.transport.TestsuitePermutation.BootstrapFactory;
+import io.netty.util.concurrent.DefaultExecutorServiceFactory;
 import io.netty.util.concurrent.DefaultThreadFactory;
 
 import java.util.ArrayList;
@@ -49,9 +50,9 @@ public class SocketTestPermutation {
     protected static final int OIO_SO_TIMEOUT = 10;  // Use short timeout for faster runs.
 
     protected final EventLoopGroup nioBossGroup =
-            new NioEventLoopGroup(BOSSES, new DefaultThreadFactory("testsuite-nio-boss", true));
+            new NioEventLoopGroup(BOSSES, new DefaultExecutorServiceFactory("testsuite-nio-boss"));
     protected final EventLoopGroup nioWorkerGroup =
-            new NioEventLoopGroup(WORKERS, new DefaultThreadFactory("testsuite-nio-worker", true));
+            new NioEventLoopGroup(WORKERS, new DefaultExecutorServiceFactory("testsuite-nio-worker"));
     protected final EventLoopGroup oioBossGroup =
             new OioEventLoopGroup(Integer.MAX_VALUE, new DefaultThreadFactory("testsuite-oio-boss", true));
     protected final EventLoopGroup oioWorkerGroup =

@@ -26,7 +26,9 @@ import io.netty.handler.codec.http.CookieDecoder;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderUtil;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
@@ -59,7 +61,6 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static io.netty.buffer.Unpooled.*;
-import static io.netty.handler.codec.http.HttpHeaders.Names.*;
 
 public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObject> {
 
@@ -71,10 +72,8 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
 
     private final StringBuilder responseContent = new StringBuilder();
 
-    private static final HttpDataFactory factory = new DefaultHttpDataFactory(DefaultHttpDataFactory.MINSIZE); //Disk
-                                                                                                              // if
-                                                                                                              // size
-                                                                                                              // exceed
+    private static final HttpDataFactory factory =
+            new DefaultHttpDataFactory(DefaultHttpDataFactory.MINSIZE); // Disk if size exceed
 
     private HttpPostRequestDecoder decoder;
     static {
@@ -98,7 +97,7 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
     public void messageReceived(ChannelHandlerContext ctx, HttpObject msg) throws Exception {
         if (msg instanceof HttpRequest) {
             HttpRequest request = this.request = (HttpRequest) msg;
-            URI uri = new URI(request.getUri());
+            URI uri = new URI(request.uri());
             if (!uri.getPath().startsWith("/form")) {
                 // Write Menu
                 writeMenu(ctx);
@@ -108,31 +107,31 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
             responseContent.append("WELCOME TO THE WILD WILD WEB SERVER\r\n");
             responseContent.append("===================================\r\n");
 
-            responseContent.append("VERSION: " + request.getProtocolVersion().text() + "\r\n");
+            responseContent.append("VERSION: " + request.protocolVersion().text() + "\r\n");
 
-            responseContent.append("REQUEST_URI: " + request.getUri() + "\r\n\r\n");
+            responseContent.append("REQUEST_URI: " + request.uri() + "\r\n\r\n");
             responseContent.append("\r\n\r\n");
 
             // new getMethod
-            for (Entry<String, String> entry : request.headers()) {
+            for (Entry<CharSequence, CharSequence> entry : request.headers()) {
                 responseContent.append("HEADER: " + entry.getKey() + '=' + entry.getValue() + "\r\n");
             }
             responseContent.append("\r\n\r\n");
 
             // new getMethod
             Set<Cookie> cookies;
-            String value = request.headers().get(COOKIE);
+            String value = request.headers().getAndConvert(HttpHeaderNames.COOKIE);
             if (value == null) {
                 cookies = Collections.emptySet();
             } else {
                 cookies = CookieDecoder.decode(value);
             }
             for (Cookie cookie : cookies) {
-                responseContent.append("COOKIE: " + cookie.toString() + "\r\n");
+                responseContent.append("COOKIE: " + cookie + "\r\n");
             }
             responseContent.append("\r\n\r\n");
 
-            QueryStringDecoder decoderQuery = new QueryStringDecoder(request.getUri());
+            QueryStringDecoder decoderQuery = new QueryStringDecoder(request.uri());
             Map<String, List<String>> uriAttributes = decoderQuery.parameters();
             for (Entry<String, List<String>> attr: uriAttributes.entrySet()) {
                 for (String attrVal: attr.getValue()) {
@@ -142,11 +141,11 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
             responseContent.append("\r\n\r\n");
 
             // if GET Method: should not try to create a HttpPostRequestDecoder
-            if (request.getMethod().equals(HttpMethod.GET)) {
+            if (request.method().equals(HttpMethod.GET)) {
                 // GET Method: should not try to create a HttpPostRequestDecoder
                 // So stop here
                 responseContent.append("\r\n\r\nEND OF GET CONTENT\r\n");
-                writeResponse(ctx.channel());
+                // Not now: LastHttpContent will be sent writeResponse(ctx.channel());
                 return;
             }
             try {
@@ -159,7 +158,7 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
                 return;
             }
 
-            readingChunks = HttpHeaders.isTransferEncodingChunked(request);
+            readingChunks = HttpHeaderUtil.isTransferEncodingChunked(request);
             responseContent.append("Is Chunked: " + readingChunks + "\r\n");
             responseContent.append("IsMultipart: " + decoder.isMultipart() + "\r\n");
             if (readingChunks) {
@@ -196,6 +195,8 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
                     reset();
                 }
             }
+        } else {
+            writeResponse(ctx.channel());
         }
     }
 
@@ -247,10 +248,10 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
                         + attribute.getName() + " data too long\r\n");
             } else {
                 responseContent.append("\r\nBODY Attribute: " + attribute.getHttpDataType().name() + ": "
-                        + attribute.toString() + "\r\n");
+                        + attribute + "\r\n");
             }
         } else {
-            responseContent.append("\r\nBODY FileUpload: " + data.getHttpDataType().name() + ": " + data.toString()
+            responseContent.append("\r\nBODY FileUpload: " + data.getHttpDataType().name() + ": " + data
                     + "\r\n");
             if (data.getHttpDataType() == HttpDataType.FileUpload) {
                 FileUpload fileUpload = (FileUpload) data;
@@ -286,23 +287,23 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
         responseContent.setLength(0);
 
         // Decide whether to close the connection or not.
-        boolean close = request.headers().contains(CONNECTION, HttpHeaders.Values.CLOSE, true)
-                || request.getProtocolVersion().equals(HttpVersion.HTTP_1_0)
-                && !request.headers().contains(CONNECTION, HttpHeaders.Values.KEEP_ALIVE, true);
+        boolean close = request.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)
+                || request.protocolVersion().equals(HttpVersion.HTTP_1_0)
+                && !request.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE, true);
 
         // Build the response object.
         FullHttpResponse response = new DefaultFullHttpResponse(
                 HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
-        response.headers().set(CONTENT_TYPE, "text/plain; charset=UTF-8");
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain; charset=UTF-8");
 
         if (!close) {
             // There's no need to add 'Content-Length' header
             // if this is the last response.
-            response.headers().set(CONTENT_LENGTH, buf.readableBytes());
+            response.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
         }
 
         Set<Cookie> cookies;
-        String value = request.headers().get(COOKIE);
+        String value = request.headers().getAndConvert(HttpHeaderNames.COOKIE);
         if (value == null) {
             cookies = Collections.emptySet();
         } else {
@@ -311,7 +312,7 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
         if (!cookies.isEmpty()) {
             // Reset the cookies if necessary.
             for (Cookie cookie : cookies) {
-                response.headers().add(SET_COOKIE, ServerCookieEncoder.encode(cookie));
+                response.headers().add(HttpHeaderNames.SET_COOKIE, ServerCookieEncoder.encode(cookie));
             }
         }
         // Write the response.
@@ -399,8 +400,8 @@ public class HttpUploadServerHandler extends SimpleChannelInboundHandler<HttpObj
         FullHttpResponse response = new DefaultFullHttpResponse(
                 HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
 
-        response.headers().set(CONTENT_TYPE, "text/html; charset=UTF-8");
-        response.headers().set(CONTENT_LENGTH, buf.readableBytes());
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/html; charset=UTF-8");
+        response.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
 
         // Write the response.
         ctx.channel().writeAndFlush(response);

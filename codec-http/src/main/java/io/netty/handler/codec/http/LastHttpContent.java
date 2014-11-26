@@ -46,11 +46,11 @@ public interface LastHttpContent extends HttpContent {
 
         @Override
         public HttpHeaders trailingHeaders() {
-            return HttpHeaders.EMPTY_HEADERS;
+            return EmptyHttpHeaders.INSTANCE;
         }
 
         @Override
-        public DecoderResult getDecoderResult() {
+        public DecoderResult decoderResult() {
             return DecoderResult.SUCCESS;
         }
 

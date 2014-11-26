@@ -22,13 +22,14 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpHeaderUtil;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.util.CharsetUtil;
 
 import java.util.Date;
 
-import static io.netty.handler.codec.http.HttpHeaders.Names.*;
-import static io.netty.handler.codec.http.HttpHeaders.*;
+import static io.netty.handler.codec.http.HttpHeaderNames.*;
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpVersion.*;
 
@@ -36,38 +37,39 @@ import static io.netty.handler.codec.http.HttpVersion.*;
  * HTTP handler that responds with a "Hello World"
  */
 public class SpdyServerHandler extends SimpleChannelInboundHandler<Object> {
-    @Override
-    public void channelReadComplete(ChannelHandlerContext ctx) {
-        ctx.flush();
-    }
 
     @Override
-    public void messageReceived(ChannelHandlerContext ctx, Object msg) throws Exception {
+    public void messageReceived(ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof HttpRequest) {
             HttpRequest req = (HttpRequest) msg;
 
-            if (is100ContinueExpected(req)) {
+            if (HttpHeaderUtil.is100ContinueExpected(req)) {
                 ctx.write(new DefaultFullHttpResponse(HTTP_1_1, CONTINUE));
             }
-            boolean keepAlive = isKeepAlive(req);
+            boolean keepAlive = HttpHeaderUtil.isKeepAlive(req);
 
             ByteBuf content = Unpooled.copiedBuffer("Hello World " + new Date(), CharsetUtil.UTF_8);
 
             FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, OK, content);
             response.headers().set(CONTENT_TYPE, "text/plain; charset=UTF-8");
-            response.headers().set(CONTENT_LENGTH, response.content().readableBytes());
+            response.headers().setInt(CONTENT_LENGTH, response.content().readableBytes());
 
             if (!keepAlive) {
                 ctx.write(response).addListener(ChannelFutureListener.CLOSE);
             } else {
-                response.headers().set(CONNECTION, Values.KEEP_ALIVE);
+                response.headers().set(CONNECTION, HttpHeaderValues.KEEP_ALIVE);
                 ctx.write(response);
             }
         }
     }
 
     @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+    public void channelReadComplete(ChannelHandlerContext ctx) {
+        ctx.flush();
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         cause.printStackTrace();
         ctx.close();
     }

@@ -98,7 +98,7 @@ public class HttpRequestDecoderTest {
     }
 
     private static void checkHeader(HttpHeaders headers, String name, String value) {
-        List<String> header1 = headers.getAll(name);
+        List<CharSequence> header1 = headers.getAll(name);
         assertEquals(1, header1.size());
         assertEquals(value, header1.get(0));
     }
@@ -136,7 +136,6 @@ public class HttpRequestDecoderTest {
             }
 
             // if header is done it should produce a HttpRequest
-            boolean headerDone = a + amount == headerLength;
             channel.writeInbound(Unpooled.wrappedBuffer(content, a, amount));
             a += amount;
         }

@@ -23,11 +23,11 @@ import com.barchart.udt.nio.RendezvousChannelUDT;
 import com.barchart.udt.nio.SelectorProviderUDT;
 import com.barchart.udt.nio.ServerSocketChannelUDT;
 import com.barchart.udt.nio.SocketChannelUDT;
-import io.netty.bootstrap.ChannelFactory;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelException;
-import io.netty.channel.udt.UdtServerChannel;
+import io.netty.channel.ChannelFactory;
 import io.netty.channel.udt.UdtChannel;
+import io.netty.channel.udt.UdtServerChannel;
 
 import java.io.IOException;
 import java.nio.channels.spi.SelectorProvider;
@@ -128,35 +128,35 @@ public final class NioUdtProvider<T extends UdtChannel> implements ChannelFactor
     /**
      * Convenience factory for {@link KindUDT#ACCEPTOR} channels.
      */
-    protected static ServerSocketChannelUDT newAcceptorChannelUDT(
+    static ServerSocketChannelUDT newAcceptorChannelUDT(
             final TypeUDT type) {
         try {
             return SelectorProviderUDT.from(type).openServerSocketChannel();
         } catch (final IOException e) {
-            throw new ChannelException("Failed to open channel");
+            throw new ChannelException("failed to open a server socket channel", e);
         }
     }
 
     /**
      * Convenience factory for {@link KindUDT#CONNECTOR} channels.
      */
-    protected static SocketChannelUDT newConnectorChannelUDT(final TypeUDT type) {
+    static SocketChannelUDT newConnectorChannelUDT(final TypeUDT type) {
         try {
             return SelectorProviderUDT.from(type).openSocketChannel();
         } catch (final IOException e) {
-            throw new ChannelException("Failed to open channel");
+            throw new ChannelException("failed to open a socket channel", e);
         }
     }
 
     /**
      * Convenience factory for {@link KindUDT#RENDEZVOUS} channels.
      */
-    protected static RendezvousChannelUDT newRendezvousChannelUDT(
+    static RendezvousChannelUDT newRendezvousChannelUDT(
             final TypeUDT type) {
         try {
             return SelectorProviderUDT.from(type).openRendezvousChannel();
         } catch (final IOException e) {
-            throw new ChannelException("Failed to open channel");
+            throw new ChannelException("failed to open a rendezvous channel", e);
         }
     }
 

@@ -46,6 +46,11 @@
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
+      <artifactId>netty-handler-proxy</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
       <artifactId>netty-codec-http</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -65,13 +70,18 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>netty-codec-stomp</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>com.google.protobuf</groupId>
       <artifactId>protobuf-java</artifactId>
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
       <artifactId>netty-tcnative</artifactId>
-      <classifier>${os.detected.classifier}</classifier>
+        <classifier>${os.detected.classifier}</classifier>
     </dependency>
     <dependency>
       <groupId>org.eclipse.jetty.npn</groupId>
@@ -103,25 +113,30 @@
       <artifactId>netty-transport-rxtx</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <scope>runtime</scope>
+    </dependency>
   </dependencies>
 
   <build>
     <plugins>
+      <!-- run-example.sh invokes this plugin to launch an example. -->
       <plugin>
-        <groupId>org.codehaus.mojo</groupId>
+        <groupId>kr.motd.maven</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <configuration>
           <executable>${java.home}/bin/java</executable>
           <commandlineArgs>
             ${argLine.common}
             ${argLine.bootcp}
+            -classpath %classpath
             ${argLine.leak}
             ${argLine.coverage}
-            -classpath %classpath
             ${argLine.example}
             ${exampleClass}
           </commandlineArgs>
-          <classpathScope>runtime</classpathScope>
         </configuration>
       </plugin>
     </plugins>

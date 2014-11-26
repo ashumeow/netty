@@ -21,8 +21,15 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.spdy.SpdyOrHttpChooser.SelectedProtocol;
+import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
+import io.netty.handler.ssl.IdentityCipherSuiteFilter;
 import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 
 /**
@@ -34,73 +41,52 @@ import io.netty.handler.ssl.util.SelfSignedCertificate;
  * See <a href="http://www.eclipse.org/jetty/documentation/current/npn-chapter.html">Jetty docs</a> for more
  * information.
  * <p>
- * You may also use maven to start the server from the command line:
+ * You may also use the {@code run-example.sh} script to start the server from the command line:
  * <pre>
- *     mvn exec:exec -Pspdy-server
+ *     ./run-example.sh spdy-server
  * </pre>
  * <p>
  * Once started, you can test the server with your
  * <a href="http://en.wikipedia.org/wiki/SPDY#Browser_support_and_usage">SPDY enabled web browser</a> by navigating
  * to <a href="https://localhost:8443/">https://localhost:8443/</a>
  */
-public class SpdyServer {
+public final class SpdyServer {
 
-    private final SslContext sslCtx;
-    private final int port;
+    static final int PORT = Integer.parseInt(System.getProperty("port", "8443"));
 
-    public SpdyServer(SslContext sslCtx, int port) {
-        this.sslCtx = sslCtx;
-        this.port = port;
-    }
+    public static void main(String[] args) throws Exception {
+        // Configure SSL.
+        SelfSignedCertificate ssc = new SelfSignedCertificate();
+        SslContext sslCtx = SslContext.newServerContext(
+                ssc.certificate(), ssc.privateKey(), null, null, IdentityCipherSuiteFilter.INSTANCE,
+                new ApplicationProtocolConfig(
+                        Protocol.NPN,
+                        SelectorFailureBehavior.FATAL_ALERT,
+                        SelectedListenerFailureBehavior.FATAL_ALERT,
+                        SelectedProtocol.SPDY_3_1.protocolName(),
+                        SelectedProtocol.HTTP_1_1.protocolName()),
+                0, 0);
 
-    public void run() throws Exception {
         // Configure the server.
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
         EventLoopGroup workerGroup = new NioEventLoopGroup();
         try {
             ServerBootstrap b = new ServerBootstrap();
             b.option(ChannelOption.SO_BACKLOG, 1024);
-            b.group(bossGroup, workerGroup).channel(NioServerSocketChannel.class)
-                    .childHandler(new SpdyServerInitializer(sslCtx));
+            b.group(bossGroup, workerGroup)
+             .channel(NioServerSocketChannel.class)
+             .handler(new LoggingHandler(LogLevel.INFO))
+             .childHandler(new SpdyServerInitializer(sslCtx));
 
-            Channel ch = b.bind(port).sync().channel();
+            Channel ch = b.bind(PORT).sync().channel();
+
+            System.err.println("Open your SPDY-enabled web browser and navigate to https://127.0.0.1:" + PORT + '/');
+            System.err.println("If using Chrome browser, check your SPDY sessions at chrome://net-internals/#spdy");
+
             ch.closeFuture().sync();
         } finally {
             bossGroup.shutdownGracefully();
             workerGroup.shutdownGracefully();
-        }
-    }
-
-    public static void main(String[] args) throws Exception {
-        checkForNpnSupport();
-        int port;
-        if (args.length > 0) {
-            port = Integer.parseInt(args[0]);
-        } else {
-            port = 8443;
-        }
-
-        System.out.println("SPDY web server started at port " + port + '.');
-        System.out.println("Open your SPDY enabled browser and navigate to https://localhost:" + port + '/');
-        System.out.println("If using Chrome browser, check your SPDY sessions at chrome://net-internals/#spdy");
-
-        // Configure SSL.
-        SelfSignedCertificate ssc = new SelfSignedCertificate();
-        SslContext sslCtx = SslContext.newServerContext(SslProvider.JDK, ssc.certificate(), ssc.privateKey());
-        new SpdyServer(sslCtx, port).run();
-    }
-
-    private static void checkForNpnSupport() {
-        try {
-            Class.forName("sun.security.ssl.NextProtoNegoExtension");
-        } catch (ClassNotFoundException ignored) {
-            System.err.println();
-            System.err.println("Could not locate Next Protocol Negotiation (NPN) implementation.");
-            System.err.println("The NPN jar should have been made available when building the examples with maven.");
-            System.err.println("Please check that your JDK is among those supported by Jetty-NPN:");
-            System.err.println("http://wiki.eclipse.org/Jetty/Feature/NPN#Versions");
-            System.err.println();
-            throw new IllegalStateException("Could not locate NPN implementation. See console err for details.");
         }
     }
 }

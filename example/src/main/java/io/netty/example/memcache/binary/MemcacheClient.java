@@ -24,8 +24,18 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.codec.http2.Http2OrHttpChooser.SelectedProtocol;
+import io.netty.handler.codec.http2.Http2SecurityUtil;
 import io.netty.handler.codec.memcache.binary.BinaryMemcacheClientCodec;
 import io.netty.handler.codec.memcache.binary.BinaryMemcacheObjectAggregator;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.SupportedCipherSuiteFilter;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -33,17 +43,32 @@ import java.io.InputStreamReader;
 /**
  * Simple memcache client that demonstrates get and set commands against a memcache server.
  */
-public class MemcacheClient {
+public final class MemcacheClient {
 
-    private final String host;
-    private final int port;
+    static final boolean SSL = System.getProperty("ssl") != null;
+    static final String HOST = System.getProperty("host", "127.0.0.1");
+    static final int PORT = Integer.parseInt(System.getProperty("port", "11211"));
 
-    public MemcacheClient(String host, int port) {
-        this.host = host;
-        this.port = port;
-    }
+    public static void main(String[] args) throws Exception {
+        // Configure SSL.
+        final SslContext sslCtx;
+        if (SSL) {
+            sslCtx = SslContext.newClientContext(SslProvider.JDK,
+                    null, InsecureTrustManagerFactory.INSTANCE, Http2SecurityUtil.CIPHERS,
+                    /* NOTE: the following filter may not include all ciphers required by the HTTP/2 specification
+                     * Please refer to the HTTP/2 specification for cipher requirements. */
+                    SupportedCipherSuiteFilter.INSTANCE,
+                    new ApplicationProtocolConfig(
+                            Protocol.ALPN,
+                            SelectorFailureBehavior.FATAL_ALERT,
+                            SelectedListenerFailureBehavior.FATAL_ALERT,
+                            SelectedProtocol.HTTP_2.protocolName(),
+                            SelectedProtocol.HTTP_1_1.protocolName()),
+                    0, 0);
+        } else {
+            sslCtx = null;
+        }
 
-    public void run() throws Exception {
         EventLoopGroup group = new NioEventLoopGroup();
         try {
             Bootstrap b = new Bootstrap();
@@ -53,6 +78,9 @@ public class MemcacheClient {
                         @Override
                         protected void initChannel(SocketChannel ch) throws Exception {
                             ChannelPipeline p = ch.pipeline();
+                            if (sslCtx != null) {
+                                p.addLast(sslCtx.newHandler(ch.alloc(), HOST, PORT));
+                            }
                             p.addLast(new BinaryMemcacheClientCodec());
                             p.addLast(new BinaryMemcacheObjectAggregator(Integer.MAX_VALUE));
                             p.addLast(new MemcacheClientHandler());
@@ -60,7 +88,7 @@ public class MemcacheClient {
                     });
 
             // Start the connection attempt.
-            Channel ch = b.connect(host, port).sync().channel();
+            Channel ch = b.connect(HOST, PORT).sync().channel();
 
             // Read commands from the stdin.
             System.out.println("Enter commands (quit to end)");
@@ -88,21 +116,5 @@ public class MemcacheClient {
         } finally {
             group.shutdownGracefully();
         }
-    }
-
-    public static void main(String[] args) throws Exception {
-        // Print usage if no argument is specified.
-        if (args.length != 2) {
-            System.err.println(
-                    "Usage: " + MemcacheClient.class.getSimpleName() +
-                            " <host> <port>");
-            return;
-        }
-
-        // Parse options.
-        String host = args[0];
-        int port = Integer.parseInt(args[1]);
-
-        new MemcacheClient(host, port).run();
     }
 }

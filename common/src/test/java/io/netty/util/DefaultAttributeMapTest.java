@@ -42,10 +42,10 @@ public class DefaultAttributeMapTest {
         assertSame(one, map.attr(key));
 
         one.setIfAbsent("Whoohoo");
-        assertSame(one.get(), "Whoohoo");
+        assertSame("Whoohoo", one.get());
 
         one.setIfAbsent("What");
-        assertNotSame(one.get(), "What");
+        assertNotSame("What", one.get());
 
         one.remove();
         assertNull(one.get());
@@ -62,9 +62,21 @@ public class DefaultAttributeMapTest {
         assertEquals(one.get(), Integer.valueOf(3653));
 
         one.setIfAbsent(1);
-        assertNotSame(one.get(), 1);
+        assertNotSame(1, one.get());
 
         one.remove();
         assertNull(one.get());
+    }
+
+    // See https://github.com/netty/netty/issues/2523
+    @Test
+    public void testSetRemove() {
+        AttributeKey<Integer> key = AttributeKey.valueOf("key");
+
+        map.attr(key).set(1);
+        assertSame(1, map.attr(key).getAndRemove());
+
+        map.attr(key).set(2);
+        assertSame(2, map.attr(key).get());
     }
 }

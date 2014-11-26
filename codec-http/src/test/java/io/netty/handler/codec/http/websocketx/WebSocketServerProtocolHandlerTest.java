@@ -23,6 +23,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpRequestDecoder;
@@ -34,7 +35,6 @@ import org.junit.Test;
 import java.util.ArrayDeque;
 import java.util.Queue;
 
-import static io.netty.handler.codec.http.HttpHeaders.Values.*;
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpVersion.*;
 import static org.junit.Assert.*;
@@ -53,7 +53,7 @@ public class WebSocketServerProtocolHandlerTest {
         EmbeddedChannel ch = createChannel(new MockOutboundHandler());
         ChannelHandlerContext handshakerCtx = ch.pipeline().context(WebSocketServerProtocolHandshakeHandler.class);
         writeUpgradeRequest(ch);
-        assertEquals(SWITCHING_PROTOCOLS, ReferenceCountUtil.releaseLater(responses.remove()).getStatus());
+        assertEquals(SWITCHING_PROTOCOLS, ReferenceCountUtil.releaseLater(responses.remove()).status());
         assertNotNull(WebSocketServerProtocolHandler.getHandshaker(handshakerCtx));
     }
 
@@ -62,10 +62,10 @@ public class WebSocketServerProtocolHandlerTest {
         EmbeddedChannel ch = createChannel();
 
         writeUpgradeRequest(ch);
-        assertEquals(SWITCHING_PROTOCOLS, ReferenceCountUtil.releaseLater(responses.remove()).getStatus());
+        assertEquals(SWITCHING_PROTOCOLS, ReferenceCountUtil.releaseLater(responses.remove()).status());
 
         ch.writeInbound(new DefaultFullHttpRequest(HTTP_1_1, HttpMethod.GET, "/test"));
-        assertEquals(FORBIDDEN, ReferenceCountUtil.releaseLater(responses.remove()).getStatus());
+        assertEquals(FORBIDDEN, ReferenceCountUtil.releaseLater(responses.remove()).status());
     }
 
     @Test
@@ -82,7 +82,7 @@ public class WebSocketServerProtocolHandlerTest {
         ch.writeInbound(httpRequestWithEntity);
 
         FullHttpResponse response = ReferenceCountUtil.releaseLater(responses.remove());
-        assertEquals(BAD_REQUEST, response.getStatus());
+        assertEquals(BAD_REQUEST, response.status());
         assertEquals("not a WebSocket handshake request: missing upgrade", getResponseMessage(response));
     }
 
@@ -94,14 +94,14 @@ public class WebSocketServerProtocolHandlerTest {
                 .uri("/test")
                 .key(null)
                 .connection("Upgrade")
-                .upgrade(WEBSOCKET.toString().toLowerCase())
+                .upgrade(HttpHeaderValues.WEBSOCKET)
                 .version13()
                 .build();
 
         ch.writeInbound(httpRequest);
 
         FullHttpResponse response = ReferenceCountUtil.releaseLater(responses.remove());
-        assertEquals(BAD_REQUEST, response.getStatus());
+        assertEquals(BAD_REQUEST, response.status());
         assertEquals("not a WebSocket request: missing key", getResponseMessage(response));
     }
 

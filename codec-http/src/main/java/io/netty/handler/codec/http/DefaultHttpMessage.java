@@ -23,7 +23,7 @@ import java.util.Map;
  * The default {@link HttpMessage} implementation.
  */
 public abstract class DefaultHttpMessage extends DefaultHttpObject implements HttpMessage {
-
+    private static final int HASH_CODE_PRIME = 31;
     private HttpVersion version;
     private final HttpHeaders headers;
 
@@ -51,20 +51,42 @@ public abstract class DefaultHttpMessage extends DefaultHttpObject implements Ht
     }
 
     @Override
-    public HttpVersion getProtocolVersion() {
+    public HttpVersion protocolVersion() {
         return version;
     }
 
     @Override
+    public int hashCode() {
+        int result = 1;
+        result = HASH_CODE_PRIME * result + headers.hashCode();
+        result = HASH_CODE_PRIME * result + version.hashCode();
+        result = HASH_CODE_PRIME * result + super.hashCode();
+        return result;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (!(o instanceof DefaultHttpMessage)) {
+            return false;
+        }
+
+        DefaultHttpMessage other = (DefaultHttpMessage) o;
+
+        return headers().equals(other.headers()) &&
+               protocolVersion().equals(other.protocolVersion()) &&
+               super.equals(o);
+    }
+
+    @Override
     public String toString() {
-        StringBuilder buf = new StringBuilder();
-        buf.append(StringUtil.simpleClassName(this));
-        buf.append("(version: ");
-        buf.append(getProtocolVersion().text());
-        buf.append(", keepAlive: ");
-        buf.append(HttpHeaders.isKeepAlive(this));
-        buf.append(')');
-        buf.append(StringUtil.NEWLINE);
+        StringBuilder buf = new StringBuilder()
+            .append(StringUtil.simpleClassName(this))
+            .append("(version: ")
+            .append(protocolVersion().text())
+            .append(", keepAlive: ")
+            .append(HttpHeaderUtil.isKeepAlive(this))
+            .append(')')
+            .append(StringUtil.NEWLINE);
         appendHeaders(buf);
 
         // Remove the last newline.
@@ -82,11 +104,15 @@ public abstract class DefaultHttpMessage extends DefaultHttpObject implements Ht
     }
 
     void appendHeaders(StringBuilder buf) {
-        for (Map.Entry<String, String> e: headers()) {
-            buf.append(e.getKey());
-            buf.append(": ");
-            buf.append(e.getValue());
-            buf.append(StringUtil.NEWLINE);
+        appendHeaders(buf, headers());
+    }
+
+    void appendHeaders(StringBuilder buf, HttpHeaders headers) {
+        for (Map.Entry<CharSequence, CharSequence> e: headers) {
+            buf.append(e.getKey())
+               .append(": ")
+               .append(e.getValue())
+               .append(StringUtil.NEWLINE);
         }
     }
 }

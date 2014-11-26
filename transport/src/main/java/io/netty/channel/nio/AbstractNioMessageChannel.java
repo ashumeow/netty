@@ -22,6 +22,7 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ServerChannel;
 
 import java.io.IOException;
+import java.net.PortUnreachableException;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.util.ArrayList;
@@ -96,7 +97,7 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 pipeline.fireChannelReadComplete();
 
                 if (exception != null) {
-                    if (exception instanceof IOException) {
+                    if (exception instanceof IOException && !(exception instanceof PortUnreachableException)) {
                         // ServerChannel should not be closed even on IOException because it can often continue
                         // accepting incoming connections. (e.g. too many open files)
                         closed = !(AbstractNioMessageChannel.this instanceof ServerChannel);
@@ -138,25 +139,39 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 }
                 break;
             }
+            try {
+                boolean done = false;
+                for (int i = config().getWriteSpinCount() - 1; i >= 0; i--) {
+                    if (doWriteMessage(msg, in)) {
+                        done = true;
+                        break;
+                    }
+                }
 
-            boolean done = false;
-            for (int i = config().getWriteSpinCount() - 1; i >= 0; i --) {
-                if (doWriteMessage(msg, in)) {
-                    done = true;
+                if (done) {
+                    in.remove();
+                } else {
+                    // Did not write all messages.
+                    if ((interestOps & SelectionKey.OP_WRITE) == 0) {
+                        key.interestOps(interestOps | SelectionKey.OP_WRITE);
+                    }
                     break;
                 }
-            }
-
-            if (done) {
-                in.remove();
-            } else {
-                // Did not write all messages.
-                if ((interestOps & SelectionKey.OP_WRITE) == 0) {
-                    key.interestOps(interestOps | SelectionKey.OP_WRITE);
+            } catch (IOException e) {
+                if (continueOnWriteError()) {
+                    in.remove(e);
+                } else {
+                    throw e;
                 }
-                break;
             }
         }
+    }
+
+    /**
+     * Returns {@code true} if we should continue the write loop on a write error.
+     */
+    protected boolean continueOnWriteError() {
+        return false;
     }
 
     /**

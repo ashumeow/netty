@@ -15,6 +15,10 @@
  */
 package io.netty.channel.nio;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.AbstractChannel;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelException;
@@ -23,12 +27,13 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.ConnectTimeoutException;
 import io.netty.channel.EventLoop;
+import io.netty.util.ReferenceCountUtil;
+import io.netty.util.ReferenceCounted;
 import io.netty.util.internal.OneTimeTask;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
-import java.net.ConnectException;
 import java.net.SocketAddress;
 import java.nio.channels.CancelledKeyException;
 import java.nio.channels.SelectableChannel;
@@ -46,7 +51,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
 
     private final SelectableChannel ch;
     protected final int readInterestOp;
-    private volatile SelectionKey selectionKey;
+    volatile SelectionKey selectionKey;
     private volatile boolean inputShutdown;
     private volatile boolean readPending;
 
@@ -97,11 +102,6 @@ public abstract class AbstractNioChannel extends AbstractChannel {
 
     protected SelectableChannel javaChannel() {
         return ch;
-    }
-
-    @Override
-    public NioEventLoop eventLoop() {
-        return (NioEventLoop) super.eventLoop();
     }
 
     /**
@@ -174,19 +174,12 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         }
 
         @Override
-        public void beginRead() {
-            // Channel.read() or ChannelHandlerContext.read() was called
-            readPending = true;
-            super.beginRead();
-        }
-
-        @Override
-        public SelectableChannel ch() {
+        public final SelectableChannel ch() {
             return javaChannel();
         }
 
         @Override
-        public void connect(
+        public final void connect(
                 final SocketAddress remoteAddress, final SocketAddress localAddress, final ChannelPromise promise) {
             if (!promise.setUncancellable() || !ensureOpen(promise)) {
                 return;
@@ -234,12 +227,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
                     });
                 }
             } catch (Throwable t) {
-                if (t instanceof ConnectException) {
-                    Throwable newT = new ConnectException(t.getMessage() + ": " + remoteAddress);
-                    newT.setStackTrace(t.getStackTrace());
-                    t = newT;
-                }
-                promise.tryFailure(t);
+                promise.tryFailure(annotateConnectException(t, remoteAddress));
                 closeIfClosed();
             }
         }
@@ -268,6 +256,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         private void fulfillConnectPromise(ChannelPromise promise, Throwable cause) {
             if (promise == null) {
                 // Closed via cancellation and the promise has been notified already.
+                return;
             }
 
             // Use tryFailure() instead of setFailure() to avoid the race against cancel().
@@ -276,7 +265,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         }
 
         @Override
-        public void finishConnect() {
+        public final void finishConnect() {
             // Note this method is invoked by the event loop only if the connection attempt was
             // neither cancelled nor timed out.
 
@@ -287,13 +276,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
                 doFinishConnect();
                 fulfillConnectPromise(connectPromise, wasActive);
             } catch (Throwable t) {
-                if (t instanceof ConnectException) {
-                    Throwable newT = new ConnectException(t.getMessage() + ": " + requestedRemoteAddress);
-                    newT.setStackTrace(t.getStackTrace());
-                    t = newT;
-                }
-
-                fulfillConnectPromise(connectPromise, t);
+                fulfillConnectPromise(connectPromise, annotateConnectException(t, requestedRemoteAddress));
             } finally {
                 // Check for null as the connectTimeoutFuture is only created if a connectTimeoutMillis > 0 is used
                 // See https://github.com/netty/netty/issues/1770
@@ -305,7 +288,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         }
 
         @Override
-        protected void flush0() {
+        protected final void flush0() {
             // Flush immediately only when there's no pending flush.
             // If there's a pending flush operation, event loop will call forceFlush() later,
             // and thus there's no need to call it now.
@@ -316,7 +299,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         }
 
         @Override
-        public void forceFlush() {
+        public final void forceFlush() {
             // directly call super.flush0() to force a flush now
             super.flush0();
         }
@@ -337,13 +320,13 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         boolean selected = false;
         for (;;) {
             try {
-                selectionKey = javaChannel().register(eventLoop().selector, 0, this);
+                selectionKey = javaChannel().register(((NioEventLoop) eventLoop().unwrap()).selector, 0, this);
                 return;
             } catch (CancelledKeyException e) {
                 if (!selected) {
                     // Force the Selector to select now as the "canceled" SelectionKey may still be
                     // cached and not removed because no Select.select(..) operation was called yet.
-                    eventLoop().selectNow();
+                    ((NioEventLoop) eventLoop().unwrap()).selectNow();
                     selected = true;
                 } else {
                     // We forced a select operation on the selector before but the SelectionKey is still cached
@@ -356,11 +339,12 @@ public abstract class AbstractNioChannel extends AbstractChannel {
 
     @Override
     protected void doDeregister() throws Exception {
-        eventLoop().cancel(selectionKey());
+        ((NioEventLoop) eventLoop().unwrap()).cancel(selectionKey());
     }
 
     @Override
     protected void doBeginRead() throws Exception {
+        // Channel.read() or ChannelHandlerContext.read() was called
         if (inputShutdown) {
             return;
         }
@@ -369,6 +353,8 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         if (!selectionKey.isValid()) {
             return;
         }
+
+        readPending = true;
 
         final int interestOps = selectionKey.interestOps();
         if ((interestOps & readInterestOp) == 0) {
@@ -385,4 +371,73 @@ public abstract class AbstractNioChannel extends AbstractChannel {
      * Finish the connect
      */
     protected abstract void doFinishConnect() throws Exception;
+
+    /**
+     * Returns an off-heap copy of the specified {@link ByteBuf}, and releases the original one.
+     * Note that this method does not create an off-heap copy if the allocation / deallocation cost is too high,
+     * but just returns the original {@link ByteBuf}..
+     */
+    protected final ByteBuf newDirectBuffer(ByteBuf buf) {
+        final int readableBytes = buf.readableBytes();
+        if (readableBytes == 0) {
+            ReferenceCountUtil.safeRelease(buf);
+            return Unpooled.EMPTY_BUFFER;
+        }
+
+        final ByteBufAllocator alloc = alloc();
+        if (alloc.isDirectBufferPooled()) {
+            ByteBuf directBuf = alloc.directBuffer(readableBytes);
+            directBuf.writeBytes(buf, buf.readerIndex(), readableBytes);
+            ReferenceCountUtil.safeRelease(buf);
+            return directBuf;
+        }
+
+        final ByteBuf directBuf = ByteBufUtil.threadLocalDirectBuffer();
+        if (directBuf != null) {
+            directBuf.writeBytes(buf, buf.readerIndex(), readableBytes);
+            ReferenceCountUtil.safeRelease(buf);
+            return directBuf;
+        }
+
+        // Allocating and deallocating an unpooled direct buffer is very expensive; give up.
+        return buf;
+    }
+
+    /**
+     * Returns an off-heap copy of the specified {@link ByteBuf}, and releases the specified holder.
+     * The caller must ensure that the holder releases the original {@link ByteBuf} when the holder is released by
+     * this method.  Note that this method does not create an off-heap copy if the allocation / deallocation cost is
+     * too high, but just returns the original {@link ByteBuf}..
+     */
+    protected final ByteBuf newDirectBuffer(ReferenceCounted holder, ByteBuf buf) {
+        final int readableBytes = buf.readableBytes();
+        if (readableBytes == 0) {
+            ReferenceCountUtil.safeRelease(holder);
+            return Unpooled.EMPTY_BUFFER;
+        }
+
+        final ByteBufAllocator alloc = alloc();
+        if (alloc.isDirectBufferPooled()) {
+            ByteBuf directBuf = alloc.directBuffer(readableBytes);
+            directBuf.writeBytes(buf, buf.readerIndex(), readableBytes);
+            ReferenceCountUtil.safeRelease(holder);
+            return directBuf;
+        }
+
+        final ByteBuf directBuf = ByteBufUtil.threadLocalDirectBuffer();
+        if (directBuf != null) {
+            directBuf.writeBytes(buf, buf.readerIndex(), readableBytes);
+            ReferenceCountUtil.safeRelease(holder);
+            return directBuf;
+        }
+
+        // Allocating and deallocating an unpooled direct buffer is very expensive; give up.
+        if (holder != buf) {
+            // Ensure to call holder.release() to give the holder a chance to release other resources than its content.
+            buf.retain();
+            ReferenceCountUtil.safeRelease(holder);
+        }
+
+        return buf;
+    }
 }

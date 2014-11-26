@@ -35,7 +35,6 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
@@ -80,6 +79,8 @@ public final class PlatformDependent {
     private static final File TMPDIR = tmpdir0();
 
     private static final int BIT_MODE = bitMode0();
+
+    private static final int ADDRESS_SIZE = addressSize0();
 
     static {
         if (logger.isDebugEnabled()) {
@@ -175,6 +176,22 @@ public final class PlatformDependent {
     }
 
     /**
+     * Return the address size of the OS.
+     * 4 (for 32 bits systems ) and 8 (for 64 bits systems).
+     */
+    public static int addressSize() {
+        return ADDRESS_SIZE;
+    }
+
+    public static long allocateMemory(long size) {
+        return PlatformDependent0.allocateMemory(size);
+    }
+
+    public static void freeMemory(long address) {
+        PlatformDependent0.freeMemory(address);
+    }
+
+    /**
      * Raises an exception bypassing compiler checks for checked exceptions.
      */
     public static void throwException(Throwable t) {
@@ -251,7 +268,9 @@ public final class PlatformDependent {
      * the current platform does not support this operation or the specified buffer is not a direct buffer.
      */
     public static void freeDirectBuffer(ByteBuffer buffer) {
-        if (hasUnsafe()) {
+        if (hasUnsafe() && !isAndroid()) {
+            // only direct to method if we are not running on android.
+            // See https://github.com/netty/netty/issues/2604
             PlatformDependent0.freeDirectBuffer(buffer);
         }
     }
@@ -380,11 +399,7 @@ public final class PlatformDependent {
      * consumer (one thread!).
      */
     public static <T> Queue<T> newMpscQueue() {
-        if (hasUnsafe()) {
-            return new MpscLinkedQueue<T>();
-        } else {
-            return new ConcurrentLinkedQueue<T>();
-        }
+        return new MpscLinkedQueue<T>();
     }
 
     /**
@@ -762,9 +777,7 @@ public final class PlatformDependent {
         }
 
         File f = new File(path);
-        if (!f.exists()) {
-            f.mkdirs();
-        }
+        f.mkdirs();
 
         if (!f.isDirectory()) {
             return null;
@@ -818,6 +831,13 @@ public final class PlatformDependent {
         } else {
             return 64;
         }
+    }
+
+    private static int addressSize0() {
+        if (!hasUnsafe()) {
+            return -1;
+        }
+        return PlatformDependent0.addressSize();
     }
 
     private PlatformDependent() {

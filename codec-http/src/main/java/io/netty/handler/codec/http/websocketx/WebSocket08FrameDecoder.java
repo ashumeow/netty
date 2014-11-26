@@ -63,6 +63,7 @@ import io.netty.handler.codec.TooLongFrameException;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import java.nio.ByteOrder;
 import java.util.List;
 
 import static io.netty.buffer.ByteBufUtil.readBytes;
@@ -94,23 +95,24 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
 
     private final long maxFramePayloadLength;
     private final boolean allowExtensions;
-    private final boolean maskedPayload;
+    private final boolean expectMaskedFrames;
+    private final boolean allowMaskMismatch;
 
     private int fragmentedFramesCount;
     private boolean frameFinalFlag;
+    private boolean frameMasked;
     private int frameRsv;
     private int frameOpcode;
     private long framePayloadLength;
     private byte[] maskingKey;
     private int framePayloadLen1;
     private boolean receivedClosingHandshake;
-    private Utf8Validator utf8Validator;
     private State state = State.READING_FIRST;
 
     /**
      * Constructor
      *
-     * @param maskedPayload
+     * @param expectMaskedFrames
      *            Web socket servers must set this to true processed incoming masked payload. Client implementations
      *            must set this to false.
      * @param allowExtensions
@@ -119,8 +121,29 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
      *            Maximum length of a frame's payload. Setting this to an appropriate value for you application
      *            helps check for denial of services attacks.
      */
-    public WebSocket08FrameDecoder(boolean maskedPayload, boolean allowExtensions, int maxFramePayloadLength) {
-        this.maskedPayload = maskedPayload;
+    public WebSocket08FrameDecoder(boolean expectMaskedFrames, boolean allowExtensions, int maxFramePayloadLength) {
+        this(expectMaskedFrames, allowExtensions, maxFramePayloadLength, false);
+    }
+
+    /**
+     * Constructor
+     *
+     * @param expectMaskedFrames
+     *            Web socket servers must set this to true processed incoming masked payload. Client implementations
+     *            must set this to false.
+     * @param allowExtensions
+     *            Flag to allow reserved extension bits to be used or not
+     * @param maxFramePayloadLength
+     *            Maximum length of a frame's payload. Setting this to an appropriate value for you application
+     *            helps check for denial of services attacks.
+     * @param allowMaskMismatch
+     *            Allows to loosen the masking requirement on received frames. When this is set to false then also
+     *            frames which are not masked properly according to the standard will still be accepted.
+     */
+    public WebSocket08FrameDecoder(boolean expectMaskedFrames, boolean allowExtensions, int maxFramePayloadLength,
+                                   boolean allowMaskMismatch) {
+        this.expectMaskedFrames = expectMaskedFrames;
+        this.allowMaskMismatch = allowMaskMismatch;
         this.allowExtensions = allowExtensions;
         this.maxFramePayloadLength = maxFramePayloadLength;
     }
@@ -158,7 +181,7 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
                     }
                     // MASK, PAYLOAD LEN 1
                     b = in.readByte();
-                    boolean frameMasked = (b & 0x80) != 0;
+                    frameMasked = (b & 0x80) != 0;
                     framePayloadLen1 = b & 0x7F;
 
                     if (frameRsv != 0 && !allowExtensions) {
@@ -166,10 +189,11 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
                         return;
                     }
 
-                    if (maskedPayload && !frameMasked) {
-                        protocolViolation(ctx, "unmasked client to server frame");
+                    if (!allowMaskMismatch && expectMaskedFrames != frameMasked) {
+                        protocolViolation(ctx, "received a frame that is not masked as expected");
                         return;
                     }
+
                     if (frameOpcode > 7) { // control frame (have MSB in opcode set)
 
                         // control frames MUST NOT be fragmented
@@ -260,7 +284,7 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
 
                     state = State.MASKING_KEY;
                 case MASKING_KEY:
-                    if (maskedPayload) {
+                    if (frameMasked) {
                         if (in.readableBytes() < 4) {
                             return;
                         }
@@ -284,7 +308,7 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
                         state = State.READING_FIRST;
 
                         // Unmask data if needed
-                        if (maskedPayload) {
+                        if (frameMasked) {
                             unmask(payloadBuffer);
                         }
 
@@ -301,8 +325,8 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
                             return;
                         }
                         if (frameOpcode == OPCODE_CLOSE) {
-                            checkCloseFrameBody(ctx, payloadBuffer);
                             receivedClosingHandshake = true;
+                            checkCloseFrameBody(ctx, payloadBuffer);
                             out.add(new CloseWebSocketFrame(frameFinalFlag, frameRsv, payloadBuffer));
                             payloadBuffer = null;
                             return;
@@ -315,33 +339,8 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
                             // allowed in the middle of a fragmented message
                             if (frameOpcode != OPCODE_PING) {
                                 fragmentedFramesCount = 0;
-
-                                // Check text for UTF8 correctness
-                                if (frameOpcode == OPCODE_TEXT ||
-                                        (utf8Validator != null && utf8Validator.isChecking())) {
-                                    // Check UTF-8 correctness for this payload
-                                    checkUTF8String(ctx, payloadBuffer);
-
-                                    // This does a second check to make sure UTF-8
-                                    // correctness for entire text message
-                                    utf8Validator.finish();
-                                }
                             }
                         } else {
-                            // Not final frame so we can expect more frames in the
-                            // fragmented sequence
-                            if (fragmentedFramesCount == 0) {
-                                // First text or binary frame for a fragmented set
-                                if (frameOpcode == OPCODE_TEXT) {
-                                    checkUTF8String(ctx, payloadBuffer);
-                                }
-                            } else {
-                                // Subsequent frames - only check if init frame is text
-                                if (utf8Validator != null && utf8Validator.isChecking()) {
-                                    checkUTF8String(ctx, payloadBuffer);
-                                }
-                            }
-
                             // Increment counter
                             fragmentedFramesCount++;
                         }
@@ -382,7 +381,29 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
     }
 
     private void unmask(ByteBuf frame) {
-        for (int i = frame.readerIndex(); i < frame.writerIndex(); i++) {
+        int i = frame.readerIndex();
+        int end = frame.writerIndex();
+
+        ByteOrder order = frame.order();
+
+        // Remark: & 0xFF is necessary because Java will do signed expansion from
+        // byte to int which we don't want.
+        int intMask = ((maskingKey[0] & 0xFF) << 24)
+                    | ((maskingKey[1] & 0xFF) << 16)
+                    | ((maskingKey[2] & 0xFF) << 8)
+                    | (maskingKey[3] & 0xFF);
+
+        // If the byte order of our buffers it little endian we have to bring our mask
+        // into the same format, because getInt() and writeInt() will use a reversed byte order
+        if (order == ByteOrder.LITTLE_ENDIAN) {
+            intMask = Integer.reverseBytes(intMask);
+        }
+
+        for (; i + 3 < end; i += 4) {
+            int unmasked = frame.getInt(i) ^ intMask;
+            frame.setInt(i, unmasked);
+        }
+        for (; i < end; i++) {
             frame.setByte(i, frame.getByte(i) ^ maskingKey[i % 4]);
         }
     }
@@ -394,7 +415,13 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
     private void protocolViolation(ChannelHandlerContext ctx, CorruptedFrameException ex) {
         state = State.CORRUPT;
         if (ctx.channel().isActive()) {
-            ctx.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
+            Object closeMessage;
+            if (receivedClosingHandshake) {
+                closeMessage = Unpooled.EMPTY_BUFFER;
+            } else {
+                closeMessage = new CloseWebSocketFrame(1002, null);
+            }
+            ctx.writeAndFlush(closeMessage).addListener(ChannelFutureListener.CLOSE);
         }
         throw ex;
     }
@@ -404,17 +431,6 @@ public class WebSocket08FrameDecoder extends ByteToMessageDecoder
             throw new TooLongFrameException("Length:" + l);
         } else {
             return (int) l;
-        }
-    }
-
-    private void checkUTF8String(ChannelHandlerContext ctx, ByteBuf buffer) {
-        try {
-            if (utf8Validator == null) {
-                utf8Validator = new Utf8Validator();
-            }
-            utf8Validator.check(buffer);
-        } catch (CorruptedFrameException ex) {
-            protocolViolation(ctx, ex);
         }
     }
 

@@ -94,9 +94,9 @@ public class HttpContentCompressor extends HttpContentEncoder {
 
     @Override
     protected Result beginEncode(HttpResponse headers, CharSequence acceptEncoding) throws Exception {
-        String contentEncoding = headers.headers().get(HttpHeaders.Names.CONTENT_ENCODING);
+        CharSequence contentEncoding = headers.headers().get(HttpHeaderNames.CONTENT_ENCODING);
         if (contentEncoding != null &&
-            !HttpHeaders.equalsIgnoreCase(HttpHeaders.Values.IDENTITY, contentEncoding)) {
+            !HttpHeaderValues.IDENTITY.equalsIgnoreCase(contentEncoding)) {
             return null;
         }
 
@@ -123,6 +123,7 @@ public class HttpContentCompressor extends HttpContentEncoder {
                         wrapper, compressionLevel, windowBits, memLevel)));
     }
 
+    @SuppressWarnings("FloatingPointEquality")
     protected ZlibWrapper determineWrapper(CharSequence acceptEncoding) {
         float starQ = -1.0f;
         float gzipQ = -1.0f;

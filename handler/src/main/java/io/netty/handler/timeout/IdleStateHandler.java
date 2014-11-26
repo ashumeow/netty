@@ -74,7 +74,7 @@ import java.util.concurrent.TimeUnit;
  * public class MyHandler extends {@link ChannelHandlerAdapter} {
  *     {@code @Override}
  *     public void userEventTriggered({@link ChannelHandlerContext} ctx, {@link Object} evt) throws {@link Exception} {
- *         if (evt instanceof {@link IdleStateEvent}} {
+ *         if (evt instanceof {@link IdleStateEvent}) {
  *             {@link IdleStateEvent} e = ({@link IdleStateEvent}) evt;
  *             if (e.state() == {@link IdleState}.READER_IDLE) {
  *                 ctx.close();
@@ -256,14 +256,15 @@ public class IdleStateHandler extends ChannelHandlerAdapter {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        promise.addListener(new ChannelFutureListener() {
+        ChannelPromise unvoid = promise.unvoid();
+        unvoid.addListener(new ChannelFutureListener() {
             @Override
             public void operationComplete(ChannelFuture future) throws Exception {
                 lastWriteTime = System.nanoTime();
                 firstWriterIdleEvent = firstAllIdleEvent = true;
             }
         });
-        ctx.write(msg, promise);
+        ctx.write(msg, unvoid);
     }
 
     private void initialize(ChannelHandlerContext ctx) {

@@ -20,6 +20,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.FileRegion;
 import io.netty.handler.codec.MessageToMessageEncoder;
 import io.netty.util.CharsetUtil;
+import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.StringUtil;
 
 import java.util.List;
@@ -69,16 +70,29 @@ public abstract class HttpObjectEncoder<H extends HttpMessage> extends MessageTo
             buf = ctx.alloc().buffer();
             // Encode the message.
             encodeInitialLine(buf, m);
-            HttpHeaders.encode(m.headers(), buf);
+            m.headers().forEachEntry(new HttpHeadersEncoder(buf));
             buf.writeBytes(CRLF);
-            state = HttpHeaders.isTransferEncodingChunked(m) ? ST_CONTENT_CHUNK : ST_CONTENT_NON_CHUNK;
+            state = HttpHeaderUtil.isTransferEncodingChunked(m) ? ST_CONTENT_CHUNK : ST_CONTENT_NON_CHUNK;
         }
+
+        // Bypass the encoder in case of an empty buffer, so that the following idiom works:
+        //
+        //     ch.write(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
+        //
+        // See https://github.com/netty/netty/issues/2983 for more information.
+
+        if (msg instanceof ByteBuf && !((ByteBuf) msg).isReadable()) {
+            out.add(EMPTY_BUFFER);
+            return;
+        }
+
         if (msg instanceof HttpContent || msg instanceof ByteBuf || msg instanceof FileRegion) {
+
             if (state == ST_INIT) {
                 throw new IllegalStateException("unexpected message type: " + StringUtil.simpleClassName(msg));
             }
 
-            int contentLength = contentLength(msg);
+            final long contentLength = contentLength(msg);
             if (state == ST_CONTENT_NON_CHUNK) {
                 if (contentLength > 0) {
                     if (buf != null && buf.writableBytes() >= contentLength && msg instanceof HttpContent) {
@@ -119,9 +133,9 @@ public abstract class HttpObjectEncoder<H extends HttpMessage> extends MessageTo
         }
     }
 
-    private void encodeChunkedContent(ChannelHandlerContext ctx, Object msg, int contentLength, List<Object> out) {
+    private void encodeChunkedContent(ChannelHandlerContext ctx, Object msg, long contentLength, List<Object> out) {
         if (contentLength > 0) {
-            byte[] length = Integer.toHexString(contentLength).getBytes(CharsetUtil.US_ASCII);
+            byte[] length = Long.toHexString(contentLength).getBytes(CharsetUtil.US_ASCII);
             ByteBuf buf = ctx.alloc().buffer(length.length + 2);
             buf.writeBytes(length);
             buf.writeBytes(CRLF);
@@ -137,7 +151,12 @@ public abstract class HttpObjectEncoder<H extends HttpMessage> extends MessageTo
             } else {
                 ByteBuf buf = ctx.alloc().buffer();
                 buf.writeBytes(ZERO_CRLF);
-                HttpHeaders.encode(headers, buf);
+                try {
+                    headers.forEachEntry(new HttpHeadersEncoder(buf));
+                } catch (Exception ex) {
+                    buf.release();
+                    PlatformDependent.throwException(ex);
+                }
                 buf.writeBytes(CRLF);
                 out.add(buf);
             }
@@ -170,7 +189,7 @@ public abstract class HttpObjectEncoder<H extends HttpMessage> extends MessageTo
         throw new IllegalStateException("unexpected message type: " + StringUtil.simpleClassName(msg));
     }
 
-    private static int contentLength(Object msg) {
+    private static long contentLength(Object msg) {
         if (msg instanceof HttpContent) {
             return ((HttpContent) msg).content().readableBytes();
         }
@@ -178,7 +197,7 @@ public abstract class HttpObjectEncoder<H extends HttpMessage> extends MessageTo
             return ((ByteBuf) msg).readableBytes();
         }
         if (msg instanceof FileRegion) {
-            return (int) ((FileRegion) msg).count();
+            return ((FileRegion) msg).count();
         }
         throw new IllegalStateException("unexpected message type: " + StringUtil.simpleClassName(msg));
     }

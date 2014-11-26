@@ -20,6 +20,7 @@ import io.netty.util.Recycler;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.internal.OneTimeTask;
+import io.netty.util.internal.RecyclableMpscLinkedQueueNode;
 
 import java.net.SocketAddress;
 
@@ -165,7 +166,7 @@ public class DefaultChannelHandlerInvoker implements ChannelHandlerInvoker {
         if (executor.inEventLoop()) {
             invokeChannelReadCompleteNow(ctx);
         } else {
-            DefaultChannelHandlerContext dctx = (DefaultChannelHandlerContext) ctx;
+            AbstractChannelHandlerContext dctx = (AbstractChannelHandlerContext) ctx;
             Runnable task = dctx.invokeChannelReadCompleteTask;
             if (task == null) {
                 dctx.invokeChannelReadCompleteTask = task = new Runnable() {
@@ -184,7 +185,7 @@ public class DefaultChannelHandlerInvoker implements ChannelHandlerInvoker {
         if (executor.inEventLoop()) {
             invokeChannelWritabilityChangedNow(ctx);
         } else {
-            DefaultChannelHandlerContext dctx = (DefaultChannelHandlerContext) ctx;
+            AbstractChannelHandlerContext dctx = (AbstractChannelHandlerContext) ctx;
             Runnable task = dctx.invokeChannelWritableStateChangedTask;
             if (task == null) {
                 dctx.invokeChannelWritableStateChangedTask = task = new Runnable() {
@@ -307,7 +308,7 @@ public class DefaultChannelHandlerInvoker implements ChannelHandlerInvoker {
         if (executor.inEventLoop()) {
             invokeReadNow(ctx);
         } else {
-            DefaultChannelHandlerContext dctx = (DefaultChannelHandlerContext) ctx;
+            AbstractChannelHandlerContext dctx = (AbstractChannelHandlerContext) ctx;
             Runnable task = dctx.invokeReadTask;
             if (task == null) {
                 dctx.invokeReadTask = task = new Runnable() {
@@ -353,7 +354,7 @@ public class DefaultChannelHandlerInvoker implements ChannelHandlerInvoker {
         if (executor.inEventLoop()) {
             invokeFlushNow(ctx);
         } else {
-            DefaultChannelHandlerContext dctx = (DefaultChannelHandlerContext) ctx;
+            AbstractChannelHandlerContext dctx = (AbstractChannelHandlerContext) ctx;
             Runnable task = dctx.invokeFlushTask;
             if (task == null) {
                 dctx.invokeFlushTask = task = new Runnable() {
@@ -398,7 +399,8 @@ public class DefaultChannelHandlerInvoker implements ChannelHandlerInvoker {
         }
     }
 
-    static final class WriteTask extends OneTimeTask implements SingleThreadEventLoop.NonWakeupRunnable {
+    static final class WriteTask extends RecyclableMpscLinkedQueueNode<SingleThreadEventLoop.NonWakeupRunnable>
+            implements SingleThreadEventLoop.NonWakeupRunnable {
         private ChannelHandlerContext ctx;
         private Object msg;
         private ChannelPromise promise;
@@ -421,10 +423,8 @@ public class DefaultChannelHandlerInvoker implements ChannelHandlerInvoker {
             return task;
         }
 
-        private final Recycler.Handle<WriteTask> handle;
-
         private WriteTask(Recycler.Handle<WriteTask> handle) {
-            this.handle = handle;
+            super(handle);
         }
 
         @Override
@@ -443,9 +443,12 @@ public class DefaultChannelHandlerInvoker implements ChannelHandlerInvoker {
                 ctx = null;
                 msg = null;
                 promise = null;
-
-                RECYCLER.recycle(this, handle);
             }
+        }
+
+        @Override
+        public SingleThreadEventLoop.NonWakeupRunnable value() {
+            return this;
         }
     }
 }

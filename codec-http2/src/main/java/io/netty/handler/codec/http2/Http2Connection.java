@@ -17,12 +17,100 @@ package io.netty.handler.codec.http2;
 
 import java.util.Collection;
 
+/**
+ * Manager for the state of an HTTP/2 connection with the remote end-point.
+ */
 public interface Http2Connection {
+
+    /**
+     * Listener for life-cycle events for streams in this connection.
+     */
+    interface Listener {
+        /**
+         * Notifies the listener that the given stream was added to the connection. This stream may
+         * not yet be active (i.e. open/half-closed).
+         */
+        void streamAdded(Http2Stream stream);
+
+        /**
+         * Notifies the listener that the given stream was made active (i.e. open in at least one
+         * direction).
+         */
+        void streamActive(Http2Stream stream);
+
+        /**
+         * Notifies the listener that the given stream is now half-closed. The stream can be
+         * inspected to determine which side is closed.
+         */
+        void streamHalfClosed(Http2Stream stream);
+
+        /**
+         * Notifies the listener that the given stream is now closed in both directions.
+         */
+        void streamInactive(Http2Stream stream);
+
+        /**
+         * Notifies the listener that the given stream has now been removed from the connection and
+         * will no longer be returned via {@link Http2Connection#stream(int)}. The connection may
+         * maintain inactive streams for some time before removing them.
+         */
+        void streamRemoved(Http2Stream stream);
+
+        /**
+         * Notifies the listener that a priority tree parent change has occurred. This method will be invoked
+         * in a top down order relative to the priority tree. This method will also be invoked after all tree
+         * structure changes have been made and the tree is in steady state relative to the priority change
+         * which caused the tree structure to change.
+         * @param stream The stream which had a parent change (new parent and children will be steady state)
+         * @param oldParent The old parent which {@code stream} used to be a child of (may be {@code null})
+         */
+        void priorityTreeParentChanged(Http2Stream stream, Http2Stream oldParent);
+
+        /**
+         * Notifies the listener that a parent dependency is about to change
+         * This is called while the tree is being restructured and so the tree
+         * structure is not necessarily steady state.
+         * @param stream The stream which the parent is about to change to {@code newParent}
+         * @param newParent The stream which will be the parent of {@code stream}
+         */
+        void priorityTreeParentChanging(Http2Stream stream, Http2Stream newParent);
+
+        /**
+         * Notifies the listener that the weight has changed for {@code stream}
+         * @param stream The stream which the weight has changed
+         * @param oldWeight The old weight for {@code stream}
+         */
+        void onWeightChanged(Http2Stream stream, short oldWeight);
+
+        /**
+         * Called when a GO_AWAY frame has either been sent or received for the connection.
+         */
+        void goingAway();
+    }
 
     /**
      * A view of the connection from one endpoint (local or remote).
      */
     interface Endpoint {
+
+        /**
+         * Returns the next valid streamId for this endpoint. If negative, the stream IDs are
+         * exhausted for this endpoint an no further streams may be created.
+         */
+        int nextStreamId();
+
+        /**
+         * Indicates whether the given streamId is from the set of IDs used by this endpoint to
+         * create new streams.
+         */
+        boolean createdStreamId(int streamId);
+
+        /**
+         * Indicates whether or not this endpoint is currently accepting new streams. This will be
+         * be false if {@link #numActiveStreams()} + 1 >= {@link #maxStreams()} or if the stream IDs
+         * for this endpoint have been exhausted (i.e. {@link #nextStreamId()} < 0).
+         */
+        boolean acceptingNewStreams();
 
         /**
          * Creates a stream initiated by this endpoint. This could fail for the following reasons:
@@ -72,6 +160,11 @@ public interface Http2Connection {
         boolean allowPushTo();
 
         /**
+         * Gets the number of currently active streams that were created by this endpoint.
+         */
+        int numActiveStreams();
+
+        /**
          * Gets the maximum number of concurrent streams allowed by this endpoint.
          */
         int maxStreams();
@@ -82,19 +175,16 @@ public interface Http2Connection {
         void maxStreams(int maxStreams);
 
         /**
-         * Indicates whether or not this endpoint allows compression.
-         */
-        boolean allowCompressedData();
-
-        /**
-         * Sets whether or not this endpoint allows compression.
-         */
-        void allowCompressedData(boolean allow);
-
-        /**
          * Gets the ID of the stream last successfully created by this endpoint.
          */
         int lastStreamCreated();
+
+        /**
+         * Gets the last stream created by this endpoint that is "known" by the opposite endpoint.
+         * If a GOAWAY was received for this endpoint, this will be the last stream ID from the
+         * GOAWAY frame. Otherwise, this will be same as {@link #lastStreamCreated()}.
+         */
+        int lastKnownStream();
 
         /**
          * Gets the {@link Endpoint} opposite this one.
@@ -103,9 +193,14 @@ public interface Http2Connection {
     }
 
     /**
-     * Indicates whether or not the local endpoint for this connection is the server.
+     * Adds a listener of stream life-cycle events. Adding the same listener multiple times has no effect.
      */
-    boolean isServer();
+    void addListener(Listener listener);
+
+    /**
+     * Removes a listener of stream life-cycle events.
+     */
+    void removeListener(Listener listener);
 
     /**
      * Attempts to get the stream for the given ID. If it doesn't exist, throws.
@@ -118,7 +213,13 @@ public interface Http2Connection {
     Http2Stream stream(int streamId);
 
     /**
-     * Gets the number of active streams in this connection.
+     * Gets the stream object representing the connection, itself (i.e. stream zero). This object
+     * always exists.
+     */
+    Http2Stream connectionStream();
+
+    /**
+     * Gets the number of streams that are currently either open or half-closed.
      */
     int numActiveStreams();
 
@@ -129,9 +230,19 @@ public interface Http2Connection {
     Collection<Http2Stream> activeStreams();
 
     /**
+     * Indicates whether or not the local endpoint for this connection is the server.
+     */
+    boolean isServer();
+
+    /**
      * Gets a view of this connection from the local {@link Endpoint}.
      */
     Endpoint local();
+
+    /**
+     * Creates a new stream initiated by the local endpoint. See {@link Endpoint#createStream(int, boolean)}.
+     */
+    Http2Stream createLocalStream(int streamId, boolean halfClosed) throws Http2Exception;
 
     /**
      * Gets a view of this connection from the remote {@link Endpoint}.
@@ -139,30 +250,32 @@ public interface Http2Connection {
     Endpoint remote();
 
     /**
-     * Marks that a GoAway frame has been sent on this connection. After calling this, both
-     * {@link #isGoAwaySent()} and {@link #isGoAway()} will be {@code true}.
+     * Creates a new stream initiated by the remote endpoint. See {@link Endpoint#createStream(int, boolean)}.
      */
-    void goAwaySent();
+    Http2Stream createRemoteStream(int streamId, boolean halfClosed) throws Http2Exception;
 
     /**
-     * Marks that a GoAway frame has been received on this connection. After calling this, both
-     * {@link #isGoAwayReceived()} and {@link #isGoAway()} will be {@code true}.
+     * Indicates whether or not a {@code GOAWAY} was received from the remote endpoint.
      */
-    void goAwayReceived();
+    boolean goAwayReceived();
 
     /**
-     * Indicates that this connection received a GoAway message.
+     * Indicates that a {@code GOAWAY} was received from the remote endpoint and sets the last known stream.
      */
-    boolean isGoAwaySent();
+    void goAwayReceived(int lastKnownStream);
 
     /**
-     * Indicates that this connection send a GoAway message.
+     * Indicates whether or not a {@code GOAWAY} was sent to the remote endpoint.
      */
-    boolean isGoAwayReceived();
+    boolean goAwaySent();
 
     /**
-     * Indicates whether or not this endpoint is going away. This is a short form for
-     * {@link #isGoAwaySent()} || {@link #isGoAwayReceived()}.
+     * Indicates that a {@code GOAWAY} was sent to the remote endpoint and sets the last known stream.
+     */
+    void goAwaySent(int lastKnownStream);
+
+    /**
+     * Indicates whether or not either endpoint has received a GOAWAY.
      */
     boolean isGoAway();
 }

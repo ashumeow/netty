@@ -23,15 +23,13 @@ import io.netty.handler.codec.spdy.SpdyHttpDecoder;
 import io.netty.handler.codec.spdy.SpdyHttpEncoder;
 import io.netty.handler.codec.spdy.SpdySessionHandler;
 import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslHandler;
-import org.eclipse.jetty.npn.NextProtoNego;
-
-import javax.net.ssl.SSLEngine;
 
 import static io.netty.handler.codec.spdy.SpdyVersion.*;
 import static io.netty.util.internal.logging.InternalLogLevel.*;
 
 public class SpdyClientInitializer extends ChannelInitializer<SocketChannel> {
+
+    private static final int MAX_SPDY_CONTENT_LENGTH = 1024 * 1024; // 1 MB
 
     private final SslContext sslCtx;
     private final HttpResponseClientHandler httpResponseHandler;
@@ -41,18 +39,10 @@ public class SpdyClientInitializer extends ChannelInitializer<SocketChannel> {
         this.httpResponseHandler = httpResponseHandler;
     }
 
-    private static final int MAX_SPDY_CONTENT_LENGTH = 1024 * 1024; // 1 MB
-
     @Override
-    public void initChannel(SocketChannel ch) throws Exception {
-        SslHandler sslHandler = sslCtx.newHandler(ch.alloc());
-        SSLEngine engine = sslHandler.engine();
-        NextProtoNego.put(engine, new SpdyClientProvider());
-        NextProtoNego.debug = true;
-
+    public void initChannel(SocketChannel ch) {
         ChannelPipeline pipeline = ch.pipeline();
-
-        pipeline.addLast("ssl", sslHandler);
+        pipeline.addLast("ssl", sslCtx.newHandler(ch.alloc()));
         pipeline.addLast("spdyFrameCodec", new SpdyFrameCodec(SPDY_3_1));
         pipeline.addLast("spdyFrameLogger", new SpdyFrameLogger(INFO));
         pipeline.addLast("spdySessionHandler", new SpdySessionHandler(SPDY_3_1, false));

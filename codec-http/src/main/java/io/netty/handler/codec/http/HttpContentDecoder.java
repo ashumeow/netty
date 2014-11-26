@@ -44,6 +44,8 @@ import java.util.List;
  */
 public abstract class HttpContentDecoder extends MessageToMessageDecoder<HttpObject> {
 
+    private static final String IDENTITY = HttpHeaderValues.IDENTITY.toString();
+
     private EmbeddedChannel decoder;
     private HttpMessage message;
     private boolean decodeStarted;
@@ -51,7 +53,7 @@ public abstract class HttpContentDecoder extends MessageToMessageDecoder<HttpObj
 
     @Override
     protected void decode(ChannelHandlerContext ctx, HttpObject msg, List<Object> out) throws Exception {
-        if (msg instanceof HttpResponse && ((HttpResponse) msg).getStatus().code() == 100) {
+        if (msg instanceof HttpResponse && ((HttpResponse) msg).status().code() == 100) {
 
             if (!(msg instanceof LastHttpContent)) {
                 continueResponse = true;
@@ -87,30 +89,30 @@ public abstract class HttpContentDecoder extends MessageToMessageDecoder<HttpObj
                 this.message = null;
 
                 // Determine the content encoding.
-                String contentEncoding = headers.get(HttpHeaders.Names.CONTENT_ENCODING);
+                String contentEncoding = headers.getAndConvert(HttpHeaderNames.CONTENT_ENCODING);
                 if (contentEncoding != null) {
                     contentEncoding = contentEncoding.trim();
                 } else {
-                    contentEncoding = HttpHeaders.Values.IDENTITY.toString();
+                    contentEncoding = IDENTITY;
                 }
 
                 if ((decoder = newContentDecoder(contentEncoding)) != null) {
                     // Decode the content and remove or replace the existing headers
                     // so that the message looks like a decoded message.
                     CharSequence targetContentEncoding = getTargetContentEncoding(contentEncoding);
-                    if (HttpHeaders.Values.IDENTITY.equals(targetContentEncoding)) {
+                    if (HttpHeaderValues.IDENTITY.equals(targetContentEncoding)) {
                         // Do NOT set the 'Content-Encoding' header if the target encoding is 'identity'
                         // as per: http://tools.ietf.org/html/rfc2616#section-14.11
-                        headers.remove(HttpHeaders.Names.CONTENT_ENCODING);
+                        headers.remove(HttpHeaderNames.CONTENT_ENCODING);
                     } else {
-                        headers.set(HttpHeaders.Names.CONTENT_ENCODING, targetContentEncoding);
+                        headers.set(HttpHeaderNames.CONTENT_ENCODING, targetContentEncoding);
                     }
 
                     out.add(message);
                     decodeContent(c, out);
 
                     // Replace the content length.
-                    if (headers.contains(HttpHeaders.Names.CONTENT_LENGTH)) {
+                    if (headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
                         int contentLength = 0;
                         int size = out.size();
                         for (int i = 0; i < size; i++) {
@@ -120,7 +122,7 @@ public abstract class HttpContentDecoder extends MessageToMessageDecoder<HttpObj
                             }
                         }
                         headers.set(
-                                HttpHeaders.Names.CONTENT_LENGTH,
+                                HttpHeaderNames.CONTENT_LENGTH,
                                 Integer.toString(contentLength));
                     }
                     return;
@@ -184,9 +186,9 @@ public abstract class HttpContentDecoder extends MessageToMessageDecoder<HttpObj
      * @param contentEncoding the value of the {@code "Content-Encoding"} header
      * @return the expected content encoding of the new content
      */
-    @SuppressWarnings("unused")
-    protected CharSequence getTargetContentEncoding(String contentEncoding) throws Exception {
-        return HttpHeaders.Values.IDENTITY;
+    protected CharSequence getTargetContentEncoding(
+            @SuppressWarnings("UnusedParameters") String contentEncoding) throws Exception {
+        return HttpHeaderValues.IDENTITY;
     }
 
     @Override
@@ -203,10 +205,10 @@ public abstract class HttpContentDecoder extends MessageToMessageDecoder<HttpObj
 
     private void cleanup() {
         if (decoder != null) {
-            // Clean-up the previous encoder if not cleaned up correctly.
+            // Clean-up the previous decoder if not cleaned up correctly.
             if (decoder.finish()) {
                 for (;;) {
-                    ByteBuf buf = decoder.readOutbound();
+                    ByteBuf buf = decoder.readInbound();
                     if (buf == null) {
                         break;
                     }

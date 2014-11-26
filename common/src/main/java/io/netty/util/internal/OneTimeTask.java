@@ -23,7 +23,7 @@ import io.netty.util.concurrent.EventExecutor;
  *
  * <strong>It is important this will not be reused. After submitted it is not allowed to get submitted again!</strong>
  */
-public abstract class OneTimeTask extends MpscLinkedQueue.Node<Runnable> implements Runnable {
+public abstract class OneTimeTask extends MpscLinkedQueueNode<Runnable> implements Runnable {
 
     @Override
     public Runnable value() {

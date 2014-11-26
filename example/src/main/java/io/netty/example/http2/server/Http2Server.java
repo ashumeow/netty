@@ -22,72 +22,69 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.http2.Http2OrHttpChooser.SelectedProtocol;
+import io.netty.handler.codec.http2.Http2SecurityUtil;
+import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 
 /**
- * A HTTP/2 Server that responds to requests with a Hello World.
- * <p>
- * Once started, you can test the server with the example client.
+ * A HTTP/2 Server that responds to requests with a Hello World. Once started, you can test the
+ * server with the example client.
  */
-public class Http2Server {
+public final class Http2Server {
 
-    private final SslContext sslCtx;
-    private final int port;
+    static final boolean SSL = System.getProperty("ssl") != null;
+    static final int PORT = Integer.parseInt(System.getProperty("port", SSL? "8443" : "8080"));
 
-    public Http2Server(SslContext sslCtx, int port) {
-        this.sslCtx = sslCtx;
-        this.port = port;
-    }
-
-    public void run() throws Exception {
+    public static void main(String[] args) throws Exception {
+        // Configure SSL.
+        final SslContext sslCtx;
+        if (SSL) {
+            SelfSignedCertificate ssc = new SelfSignedCertificate();
+            sslCtx = SslContext.newServerContext(SslProvider.JDK,
+                    ssc.certificate(), ssc.privateKey(), null,
+                    Http2SecurityUtil.CIPHERS,
+                    /* NOTE: the following filter may not include all ciphers required by the HTTP/2 specification
+                     * Please refer to the HTTP/2 specification for cipher requirements. */
+                    SupportedCipherSuiteFilter.INSTANCE,
+                    new ApplicationProtocolConfig(
+                            Protocol.ALPN,
+                            SelectorFailureBehavior.FATAL_ALERT,
+                            SelectedListenerFailureBehavior.FATAL_ALERT,
+                            SelectedProtocol.HTTP_2.protocolName(),
+                            SelectedProtocol.HTTP_1_1.protocolName()),
+                    0, 0);
+        } else {
+            sslCtx = null;
+        }
         // Configure the server.
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
         EventLoopGroup workerGroup = new NioEventLoopGroup();
         try {
             ServerBootstrap b = new ServerBootstrap();
             b.option(ChannelOption.SO_BACKLOG, 1024);
-            b.group(bossGroup, workerGroup).channel(NioServerSocketChannel.class)
-                    .childHandler(new Http2ServerInitializer(sslCtx));
+            b.group(bossGroup, workerGroup)
+             .channel(NioServerSocketChannel.class)
+             .handler(new LoggingHandler(LogLevel.INFO))
+             .childHandler(new Http2ServerInitializer(sslCtx));
 
-            Channel ch = b.bind(port).sync().channel();
+            Channel ch = b.bind(PORT).sync().channel();
+
+            System.err.println("Open your HTTP/2-enabled web browser and navigate to " +
+                    (SSL? "https" : "http") + "://127.0.0.1:" + PORT + '/');
+
             ch.closeFuture().sync();
         } finally {
             bossGroup.shutdownGracefully();
             workerGroup.shutdownGracefully();
-        }
-    }
-
-    public static void main(String[] args) throws Exception {
-        checkForNpnSupport();
-        int port;
-        if (args.length > 0) {
-            port = Integer.parseInt(args[0]);
-        } else {
-            port = 8443;
-        }
-
-        System.out.println("HTTP2 server started at port " + port + '.');
-
-        // Configure SSL context.
-        SelfSignedCertificate ssc = new SelfSignedCertificate();
-        SslContext sslCtx = SslContext.newServerContext(SslProvider.JDK, ssc.certificate(), ssc.privateKey());
-
-        new Http2Server(sslCtx, port).run();
-    }
-
-    public static void checkForNpnSupport() {
-        try {
-            Class.forName("sun.security.ssl.NextProtoNegoExtension");
-        } catch (ClassNotFoundException ignored) {
-            System.err.println();
-            System.err.println("Could not locate Next Protocol Negotiation (NPN) implementation.");
-            System.err.println("The NPN jar should have been made available when building the examples with maven.");
-            System.err.println("Please check that your JDK is among those supported by Jetty-NPN:");
-            System.err.println("http://wiki.eclipse.org/Jetty/Feature/NPN#Versions");
-            System.err.println();
-            throw new IllegalStateException("Could not locate NPN implementation. See console err for details.");
         }
     }
 }

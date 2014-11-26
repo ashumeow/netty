@@ -16,157 +16,109 @@
 package io.netty.handler.codec.http2;
 
 import static io.netty.handler.codec.http2.Http2CodecUtil.CONNECTION_STREAM_ID;
-import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_FLOW_CONTROL_WINDOW_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_WINDOW_SIZE;
+import static io.netty.handler.codec.http2.Http2Error.PROTOCOL_ERROR;
 import static io.netty.handler.codec.http2.Http2Error.FLOW_CONTROL_ERROR;
-import static io.netty.handler.codec.http2.Http2Error.STREAM_CLOSED;
-import static io.netty.handler.codec.http2.Http2Exception.format;
-import static io.netty.handler.codec.http2.Http2Exception.protocolError;
+import static io.netty.handler.codec.http2.Http2Error.INTERNAL_ERROR;
+import static io.netty.handler.codec.http2.Http2Exception.streamError;
+import static io.netty.handler.codec.http2.Http2Exception.connectionError;
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import io.netty.buffer.ByteBuf;
-import io.netty.handler.codec.http2.Http2PriorityTree.Priority;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPromise;
 
 import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Queue;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Basic implementation of {@link Http2OutboundFlowController}.
  */
 public class DefaultHttp2OutboundFlowController implements Http2OutboundFlowController {
-    /**
-     * The interval (in ns) at which the removed priority garbage collector runs.
-     */
-    private static final long GARBAGE_COLLECTION_INTERVAL = TimeUnit.SECONDS.toNanos(2);
 
     /**
-     * A comparators that sorts priority nodes in ascending order by the amount
-     * of priority data available for its subtree.
+     * A {@link Comparator} that sorts streams in ascending order the amount of streamable data.
      */
-    private static final Comparator<Priority<FlowState>> DATA_WEIGHT =
-            new Comparator<Priority<FlowState>>() {
-                private static final int MAX_DATA_THRESHOLD = Integer.MAX_VALUE / 256;
-                @Override
-                public int compare(Priority<FlowState> o1, Priority<FlowState> o2) {
-                    int o1Data = o1.data().priorityBytes();
-                    int o2Data = o2.data().priorityBytes();
-                    if (o1Data > MAX_DATA_THRESHOLD || o2Data > MAX_DATA_THRESHOLD) {
-                        // Corner case to make sure we don't overflow an integer with
-                        // the multiply.
-                        return o1.data().priorityBytes() - o2.data().priorityBytes();
-                    }
+    private static final Comparator<Http2Stream> WEIGHT_ORDER = new Comparator<Http2Stream>() {
+        @Override
+        public int compare(Http2Stream o1, Http2Stream o2) {
+            return o2.weight() - o1.weight();
+        }
+    };
 
-                    // Scale the data by the weight.
-                    return (o1Data * o1.weight()) - (o2Data * o2.weight());
+    private final Http2Connection connection;
+    private final Http2FrameWriter frameWriter;
+    private int initialWindowSize = DEFAULT_WINDOW_SIZE;
+    private ChannelHandlerContext ctx;
+    private boolean frameSent;
+
+    public DefaultHttp2OutboundFlowController(Http2Connection connection, Http2FrameWriter frameWriter) {
+        this.connection = checkNotNull(connection, "connection");
+        this.frameWriter = checkNotNull(frameWriter, "frameWriter");
+
+        // Add a flow state for the connection.
+        connection.connectionStream().outboundFlow(new OutboundFlowState(connection.connectionStream()));
+
+        // Register for notification of new streams.
+        connection.addListener(new Http2ConnectionAdapter() {
+            @Override
+            public void streamAdded(Http2Stream stream) {
+                // Just add a new flow state to the stream.
+                stream.outboundFlow(new OutboundFlowState(stream));
+            }
+
+            @Override
+            public void streamHalfClosed(Http2Stream stream) {
+                if (!stream.localSideOpen()) {
+                    // Any pending frames can never be written, clear and
+                    // write errors for any pending frames.
+                    state(stream).clear();
                 }
-            };
-
-    private final Http2PriorityTree<FlowState> priorityTree;
-    private final FlowState connectionFlow;
-    private final GarbageCollector garbageCollector;
-    private int initialWindowSize = DEFAULT_FLOW_CONTROL_WINDOW_SIZE;
-
-    public DefaultHttp2OutboundFlowController() {
-        priorityTree = new DefaultHttp2PriorityTree<FlowState>();
-        connectionFlow = new FlowState(priorityTree.root());
-        priorityTree.root().data(connectionFlow);
-        garbageCollector = new GarbageCollector();
-    }
-
-    @Override
-    public void addStream(int streamId, int parent, short weight, boolean exclusive) {
-        if (streamId <= 0) {
-            throw new IllegalArgumentException("Stream ID must be > 0");
-        }
-        Priority<FlowState> priority = priorityTree.get(streamId);
-        if (priority != null) {
-            throw new IllegalArgumentException("stream " + streamId + " already exists");
-        }
-
-        priority = priorityTree.prioritize(streamId, parent, weight, exclusive);
-        priority.data(new FlowState(priority));
-    }
-
-    @Override
-    public void updateStream(int streamId, int parentId, short weight, boolean exclusive) {
-        if (streamId <= 0) {
-            throw new IllegalArgumentException("Stream ID must be > 0");
-        }
-        Priority<FlowState> priority = priorityTree.get(streamId);
-        if (priority == null) {
-            throw new IllegalArgumentException("stream " + streamId + " does not exist");
-        }
-
-        // Get the parent stream.
-        Priority<FlowState> parent = priorityTree.root();
-        if (parentId != 0) {
-            parent = priorityTree.get(parentId);
-            if (parent == null) {
-                throw new IllegalArgumentException("Parent stream " + parentId + " does not exist");
-            }
-        }
-
-        // Determine whether we're adding a circular dependency on the parent. If so, this will
-        // restructure the tree to move this priority above the parent.
-        boolean circularDependency = parent.isDescendantOf(priority);
-        Priority<FlowState> previousParent = priority.parent();
-        boolean parentChange = previousParent != parent;
-
-        // If the parent is changing, remove the priority bytes from all relevant branches of the
-        // priority tree. We will restore them where appropriate after the move.
-        if (parentChange) {
-            // The parent is changing, remove the priority bytes for this subtree from its previous
-            // parent.
-            previousParent.data().incrementPriorityBytes(-priority.data().priorityBytes());
-            if (circularDependency) {
-                // The parent is currently a descendant of priority. Remove the priority bytes
-                // for its subtree starting at its parent node.
-                parent.parent().data().incrementPriorityBytes(-parent.data().priorityBytes());
-            }
-        }
-
-        // Adjust the priority tree.
-        priorityTree.prioritize(streamId, parentId, weight, exclusive);
-
-        // If the parent was changed, restore the priority bytes to the appropriate branches
-        // of the priority tree.
-        if (parentChange) {
-            if (circularDependency) {
-                // The parent was re-rooted. Update the priority bytes for its parent branch.
-               parent.parent().data().incrementPriorityBytes(parent.data().priorityBytes());
             }
 
-            // Add the priority bytes for this subtree to the new parent branch.
-            parent.data().incrementPriorityBytes(priority.data().priorityBytes());
-        }
-    }
+            @Override
+            public void streamInactive(Http2Stream stream) {
+                // Any pending frames can never be written, clear and
+                // write errors for any pending frames.
+                state(stream).clear();
+            }
 
-    @Override
-    public void removeStream(int streamId) {
-        if (streamId <= 0) {
-            throw new IllegalArgumentException("Stream ID must be > 0");
-        }
+            @Override
+            public void priorityTreeParentChanged(Http2Stream stream, Http2Stream oldParent) {
+                Http2Stream parent = stream.parent();
+                if (parent != null) {
+                    state(parent).incrementStreamableBytesForTree(state(stream).streamableBytesForTree());
+                }
+            }
 
-        Priority<FlowState> priority = priorityTree.get(streamId);
-        if (priority != null) {
-            priority.data().markForRemoval();
-        }
+            @Override
+            public void priorityTreeParentChanging(Http2Stream stream, Http2Stream newParent) {
+                Http2Stream parent = stream.parent();
+                if (parent != null) {
+                    state(parent).incrementStreamableBytesForTree(-state(stream).streamableBytesForTree());
+                }
+            }
+        });
     }
 
     @Override
     public void initialOutboundWindowSize(int newWindowSize) throws Http2Exception {
+        if (newWindowSize < 0) {
+            throw new IllegalArgumentException("Invalid initial window size: " + newWindowSize);
+        }
+
         int delta = newWindowSize - initialWindowSize;
         initialWindowSize = newWindowSize;
-        connectionFlow.incrementStreamWindow(delta);
-        for (Priority<FlowState> priority : priorityTree) {
-            FlowState state = priority.data();
-            if (!state.isMarkedForRemoval()) {
-                // Verify that the maximum value is not exceeded by this change.
-                state.incrementStreamWindow(delta);
-            }
+        for (Http2Stream stream : connection.activeStreams()) {
+            // Verify that the maximum value is not exceeded by this change.
+            OutboundFlowState state = state(stream);
+            state.incrementStreamWindow(delta);
         }
 
         if (delta > 0) {
@@ -184,55 +136,97 @@ public class DefaultHttp2OutboundFlowController implements Http2OutboundFlowCont
     public void updateOutboundWindowSize(int streamId, int delta) throws Http2Exception {
         if (streamId == CONNECTION_STREAM_ID) {
             // Update the connection window and write any pending frames for all streams.
-            connectionFlow.incrementStreamWindow(delta);
+            connectionState().incrementStreamWindow(delta);
             writePendingBytes();
         } else {
             // Update the stream window and write any pending frames for the stream.
-            FlowState state = getStateOrFail(streamId);
+            OutboundFlowState state = stateOrFail(streamId);
             state.incrementStreamWindow(delta);
+            frameSent = false;
             state.writeBytes(state.writableWindow());
+            if (frameSent) {
+                flush();
+            }
         }
     }
 
     @Override
-    public void setBlocked(int streamId) throws Http2Exception {
-        // Ignore blocked frames. Just rely on window updates.
+    public ChannelFuture writeData(ChannelHandlerContext ctx, int streamId, ByteBuf data, int padding,
+            boolean endStream, ChannelPromise promise) {
+        checkNotNull(ctx, "ctx");
+        checkNotNull(promise, "promise");
+        checkNotNull(data, "data");
+        if (this.ctx != null && this.ctx != ctx) {
+            throw new IllegalArgumentException("Writing data from multiple ChannelHandlerContexts is not supported");
+        }
+        if (padding < 0) {
+            throw new IllegalArgumentException("padding must be >= 0");
+        }
+        if (streamId <= 0) {
+            throw new IllegalArgumentException("streamId must be >= 0");
+        }
+
+        // Save the context. We'll use this later when we write pending bytes.
+        this.ctx = ctx;
+
+        try {
+            OutboundFlowState state = stateOrFail(streamId);
+
+            int window = state.writableWindow();
+            boolean framesAlreadyQueued = state.hasFrame();
+
+            OutboundFlowState.Frame frame = state.newFrame(promise, data, padding, endStream);
+            if (!framesAlreadyQueued && window >= frame.size()) {
+                // Window size is large enough to send entire data frame
+                frame.write();
+                ctx.flush();
+                return promise;
+            }
+
+            // Enqueue the frame to be written when the window size permits.
+            frame.enqueue();
+
+            if (framesAlreadyQueued || window <= 0) {
+                // Stream already has frames pending or is stalled, don't send anything now.
+                return promise;
+            }
+
+            // Create and send a partial frame up to the window size.
+            frame.split(window).write();
+            ctx.flush();
+        } catch (Http2Exception e) {
+            promise.setFailure(e);
+        }
+        return promise;
     }
 
     @Override
-    public void sendFlowControlled(int streamId, ByteBuf data, int padding, boolean endStream,
-            boolean endSegment, boolean compressed, FrameWriter frameWriter) throws Http2Exception {
-        FlowState state = getStateOrFail(streamId);
-        FlowState.Frame frame =
-                state.newFrame(data, padding, endStream, endSegment, compressed, frameWriter);
+    public ChannelFuture lastWriteForStream(int streamId) {
+        OutboundFlowState state = state(streamId);
+        return state != null ? state.lastNewFrame() : null;
+    }
 
-        int dataLength = data.readableBytes();
-        if (state.writableWindow() >= dataLength) {
-            // Window size is large enough to send entire data frame
-            frame.write();
-            return;
-        }
+    private static OutboundFlowState state(Http2Stream stream) {
+        return (OutboundFlowState) stream.outboundFlow();
+    }
 
-        // Enqueue the frame to be written when the window size permits.
-        frame.enqueue();
+    private OutboundFlowState connectionState() {
+        return state(connection.connectionStream());
+    }
 
-        if (state.writableWindow() <= 0) {
-            // Stream is stalled, don't send anything now.
-            return;
-        }
-
-        // Create and send a partial frame up to the window size.
-        frame.split(state.writableWindow()).write();
+    private OutboundFlowState state(int streamId) {
+        Http2Stream stream = connection.stream(streamId);
+        return stream != null ? state(stream) : null;
     }
 
     /**
-     * Attempts to get the {@link FlowState} for the given stream. If not available, raises a
+     * Attempts to get the {@link OutboundFlowState} for the given stream. If not available, raises a
      * {@code PROTOCOL_ERROR}.
      */
-    private FlowState getStateOrFail(int streamId) throws Http2Exception {
-        FlowState state = getFlowState(streamId);
+    private OutboundFlowState stateOrFail(int streamId) throws Http2Exception {
+        OutboundFlowState state = state(streamId);
         if (state == null) {
-            throw protocolError("Missing flow control window for stream: %d", streamId);
+            throw connectionError(PROTOCOL_ERROR, "Missing flow control window for stream: %d", streamId);
         }
         return state;
     }
@@ -241,275 +235,224 @@ public class DefaultHttp2OutboundFlowController implements Http2OutboundFlowCont
      * Returns the flow control window for the entire connection.
      */
     private int connectionWindow() {
-        return priorityTree.root().data().streamWindow();
+        return connectionState().window();
+    }
+
+    /**
+     * Flushes the {@link ChannelHandlerContext} if we've received any data frames.
+     */
+    private void flush() {
+        if (ctx != null) {
+            ctx.flush();
+        }
     }
 
     /**
      * Writes as many pending bytes as possible, according to stream priority.
      */
     private void writePendingBytes() throws Http2Exception {
-        // Perform garbage collection to remove any priorities marked for deletion from the tree.
-        garbageCollector.run();
+        Http2Stream connectionStream = connection.connectionStream();
+        int connectionWindow = state(connectionStream).window();
 
-        // Recursively write as many of the total writable bytes as possible.
-        Priority<FlowState> root = priorityTree.root();
-        writeAllowedBytes(root, root.data().priorityBytes());
+        if (connectionWindow > 0) {
+            frameSent = false;
+            writeChildren(connectionStream, connectionWindow);
+            for (Http2Stream stream : connection.activeStreams()) {
+                writeChildNode(state(stream));
+            }
+            if (frameSent) {
+                flush();
+            }
+        }
     }
 
     /**
-     * Recursively traverses the priority tree rooted at the given node. Attempts to write the
-     * allowed bytes for the streams in this sub tree based on their weighted priorities.
-     *
-     * @param priority the sub tree to write to. On the first invocation, this will be the root of
-     *            the priority tree (i.e. the connection node).
-     * @param allowance an allowed number of bytes that may be written to the streams in this sub
-     *            tree.
+     * Write the children of {@code parent} in the priority tree. This will allocate bytes by stream weight.
+     * @param parent The parent of the nodes which will be written.
+     * @param connectionWindow The connection window this is available for use at this point in the tree.
+     * @return An object summarizing the write and allocation results.
      */
-    private void writeAllowedBytes(Priority<FlowState> priority, int allowance)
-            throws Http2Exception {
-        // Write the allowed bytes for this node. If not all of the allowance was used,
-        // restore what's left so that it can be propagated to future nodes.
-        FlowState state = priority.data();
-        int bytesWritten = state.writeBytes(allowance);
-        allowance -= bytesWritten;
+    private int writeChildren(Http2Stream parent, int connectionWindow) {
+        OutboundFlowState state = state(parent);
+        if (state.streamableBytesForTree() <= 0) {
+            return 0;
+        }
+        int bytesAllocated = 0;
 
-        if (allowance <= 0 || priority.isLeaf()) {
-            // Nothing left to do in this sub tree.
-            return;
+        // If the number of streamable bytes for this tree will fit in the connection window
+        // then there is no need to prioritize the bytes...everyone sends what they have
+        if (state.streamableBytesForTree() <= connectionWindow) {
+            for (Http2Stream child : parent.children()) {
+                state = state(child);
+                int bytesForChild = state.streamableBytes();
+
+                if (bytesForChild > 0 || state.hasFrame()) {
+                    state.allocate(bytesForChild);
+                    writeChildNode(state);
+                    bytesAllocated += bytesForChild;
+                    connectionWindow -= bytesForChild;
+                }
+                int childBytesAllocated = writeChildren(child, connectionWindow);
+                bytesAllocated += childBytesAllocated;
+                connectionWindow -= childBytesAllocated;
+            }
+            return bytesAllocated;
         }
 
-        // Clip the remaining connection flow control window by the allowance.
-        int remainingWindow = min(allowance, connectionWindow());
+        // This is the priority algorithm which will divide the available bytes based
+        // upon stream weight relative to its peers
+        Http2Stream[] children = parent.children().toArray(new Http2Stream[parent.numChildren()]);
+        Arrays.sort(children, WEIGHT_ORDER);
+        int totalWeight = parent.totalChildWeights();
+        for (int tail = children.length; tail > 0;) {
+            int head = 0;
+            int nextTail = 0;
+            int nextTotalWeight = 0;
+            int nextConnectionWindow = connectionWindow;
+            for (; head < tail && nextConnectionWindow > 0; ++head) {
+                Http2Stream child = children[head];
+                state = state(child);
+                int weight = child.weight();
+                double weightRatio = weight / (double) totalWeight;
 
-        // The total number of unallocated bytes from the children of this node.
-        int unallocatedBytes = state.priorityBytes() - state.streamableBytes();
+                int bytesForTree = Math.min(nextConnectionWindow, (int) Math.ceil(connectionWindow * weightRatio));
+                int bytesForChild = Math.min(state.streamableBytes(), bytesForTree);
 
-        // Optimization. If the window is big enough to fit all the data. Just write everything
-        // and skip the priority algorithm.
-        if (unallocatedBytes <= remainingWindow) {
-            for (Priority<FlowState> child : priority.children()) {
-                writeAllowedBytes(child, child.data().unallocatedPriorityBytes());
-            }
-            return;
-        }
+                if (bytesForChild > 0 || state.hasFrame()) {
+                    state.allocate(bytesForChild);
+                    bytesAllocated += bytesForChild;
+                    nextConnectionWindow -= bytesForChild;
+                    bytesForTree -= bytesForChild;
+                    // If this subtree still wants to send then re-insert into children list and re-consider for next
+                    // iteration. This is needed because we don't yet know if all the peers will be able to use
+                    // all of their "fair share" of the connection window, and if they don't use it then we should
+                    // divide their unused shared up for the peers who still want to send.
+                    if (state.streamableBytesForTree() - bytesForChild > 0) {
+                        children[nextTail++] = child;
+                        nextTotalWeight += weight;
+                    }
+                    if (state.streamableBytes() - bytesForChild == 0) {
+                        writeChildNode(state);
+                    }
+                }
 
-        // Copy and sort the children of this node. They are sorted in ascending order the total
-        // priority bytes for the subtree scaled by the weight of the node. The algorithm gives
-        // preference to nodes that appear later in the list, since the weight of each node
-        // increases in value as the list is iterated. This means that with this node ordering,
-        // the most bytes will be written to those nodes with the largest aggregate number of
-        // bytes and the highest priority.
-        ArrayList<Priority<FlowState>> states = new ArrayList<Priority<FlowState>>(priority.children());
-        Collections.sort(states, DATA_WEIGHT);
-
-        // Iterate over the children and spread the remaining bytes across them as is appropriate
-        // based on the weights. This algorithm loops over all of the children more than once,
-        // although it should typically only take a few passes to complete. In each pass we
-        // give a node its share of the current remaining bytes. The node's weight and bytes
-        // allocated are then decremented from the totals, so that the subsequent
-        // nodes split the difference. If after being processed, a node still has writable data,
-        // it is added back to the queue for further processing in the next pass.
-        int remainingWeight = priority.totalChildWeights();
-        int nextTail = 0;
-        int unallocatedBytesForNextPass = 0;
-        int remainingWeightForNextPass = 0;
-        for (int head = 0, tail = states.size(); ; ++head) {
-            if (head >= tail) {
-                // We've reached the end one pass of the nodes. Reset the totals based on
-                // the nodes that were re-added to the deque since they still have data available.
-                unallocatedBytes = unallocatedBytesForNextPass;
-                remainingWeight = remainingWeightForNextPass;
-                unallocatedBytesForNextPass = 0;
-                remainingWeightForNextPass = 0;
-                head = 0;
-                tail = nextTail;
-                nextTail = 0;
-            }
-
-            // Get the next state, or break if nothing to do.
-            if (head >= tail) {
-                break;
-            }
-            Priority<FlowState> next = states.get(head);
-            FlowState node = next.data();
-            int weight = node.priority().weight();
-
-            // Determine the value (in bytes) of a single unit of weight.
-            double dataToWeightRatio = min(unallocatedBytes, remainingWindow) / (double) remainingWeight;
-            unallocatedBytes -= node.unallocatedPriorityBytes();
-            remainingWeight -= weight;
-
-            if (dataToWeightRatio > 0.0 && node.unallocatedPriorityBytes() > 0) {
-
-                // Determine the portion of the current writable data that is assigned to this
-                // node.
-                int writableChunk = (int) (weight * dataToWeightRatio);
-
-                // Clip the chunk allocated by the total amount of unallocated data remaining in
-                // the node.
-                int allocatedChunk = min(writableChunk, node.unallocatedPriorityBytes());
-
-                // Update the remaining connection window size.
-                remainingWindow -= allocatedChunk;
-
-                // Mark these bytes as allocated.
-                node.allocatePriorityBytes(allocatedChunk);
-                if (node.unallocatedPriorityBytes() > 0) {
-                    // There is still data remaining for this stream. Add it back to the queue
-                    // for the next pass.
-                    unallocatedBytesForNextPass += node.unallocatedPriorityBytes();
-                    remainingWeightForNextPass += weight;
-                    states.set(nextTail++, node.priority());
-                    continue;
+                if (bytesForTree > 0) {
+                    int childBytesAllocated = writeChildren(child, bytesForTree);
+                    bytesAllocated += childBytesAllocated;
+                    nextConnectionWindow -= childBytesAllocated;
                 }
             }
-
-            if (node.allocatedPriorityBytes() > 0) {
-                // Write the allocated data for this stream.
-                writeAllowedBytes(node.priority(), node.allocatedPriorityBytes());
-
-                // We're done with this node. Remark all bytes as unallocated for future
-                // invocations.
-                node.allocatePriorityBytes(0);
-            }
+            connectionWindow = nextConnectionWindow;
+            totalWeight = nextTotalWeight;
+            tail = nextTail;
         }
+
+        return bytesAllocated;
     }
 
-    private FlowState getFlowState(int streamId) {
-        Priority<FlowState> priority = priorityTree.get(streamId);
-        return priority != null ? priority.data() : null;
+    /**
+     * Write bytes allocated to {@code state}
+     */
+    private static void writeChildNode(OutboundFlowState state) {
+        state.writeBytes(state.allocated());
+        state.resetAllocated();
     }
 
     /**
      * The outbound flow control state for a single stream.
      */
-    private final class FlowState {
+    final class OutboundFlowState implements Http2FlowState {
         private final Queue<Frame> pendingWriteQueue;
-        private final Priority<FlowState> priority;
-        private int streamWindow = initialWindowSize;
-        private long removalTime;
+        private final Http2Stream stream;
+        private int window = initialWindowSize;
         private int pendingBytes;
-        private int priorityBytes;
-        private int allocatedPriorityBytes;
+        private int streamableBytesForTree;
+        private int allocated;
+        private ChannelFuture lastNewFrame;
 
-        FlowState(Priority<FlowState> priority) {
-            this.priority = priority;
+        private OutboundFlowState(Http2Stream stream) {
+            this.stream = stream;
             pendingWriteQueue = new ArrayDeque<Frame>(2);
         }
 
-        /**
-         * Gets the priority in the tree associated with this flow state.
-         */
-        Priority<FlowState> priority() {
-            return priority;
+        @Override
+        public int window() {
+            return window;
         }
 
         /**
-         * Indicates that this priority has been marked for removal, thus making it a candidate for
-         * garbage collection.
+         * Increment the number of bytes allocated to this stream by the priority algorithm
          */
-        boolean isMarkedForRemoval() {
-            return removalTime > 0L;
+        private void allocate(int bytes) {
+            allocated += bytes;
         }
 
         /**
-         * If marked for removal, indicates the removal time of this priority.
+         * Gets the number of bytes that have been allocated to this stream by the priority algorithm.
          */
-        long removalTime() {
-            return removalTime;
+        private int allocated() {
+            return allocated;
         }
 
         /**
-         * Marks this state for removal, thus making it a candidate for garbage collection. Sets the
-         * removal time to the current system time.
+         * Reset the number of bytes that have been allocated to this stream by the priority algorithm.
          */
-        void markForRemoval() {
-            if (!isMarkedForRemoval()) {
-                garbageCollector.add(priority);
-                clear();
-            }
+        private void resetAllocated() {
+            allocated = 0;
         }
 
         /**
-         * The flow control window for this stream. If this state is for stream 0, then this is
-         * the flow control window for the entire connection.
+         * Increments the flow control window for this stream by the given delta and returns the new value.
          */
-        int streamWindow() {
-            return streamWindow;
-        }
-
-        /**
-         * Increments the flow control window for this stream by the given delta and returns the new
-         * value.
-         */
-        int incrementStreamWindow(int delta) throws Http2Exception {
-            if (delta > 0 && (Integer.MAX_VALUE - delta) < streamWindow) {
-                throw new Http2StreamException(priority.streamId(), FLOW_CONTROL_ERROR,
-                        "Window size overflow for stream: " + priority.streamId());
+        private int incrementStreamWindow(int delta) throws Http2Exception {
+            if (delta > 0 && Integer.MAX_VALUE - delta < window) {
+                throw streamError(stream.id(), FLOW_CONTROL_ERROR,
+                        "Window size overflow for stream: %d", stream.id());
             }
             int previouslyStreamable = streamableBytes();
-            streamWindow += delta;
+            window += delta;
 
-            // Update this branch of the priority tree if the streamable bytes have changed for this
-            // node.
-            incrementPriorityBytes(streamableBytes() - previouslyStreamable);
-            return streamWindow;
+            // Update this branch of the priority tree if the streamable bytes have changed for this node.
+            int streamableDelta = streamableBytes() - previouslyStreamable;
+            incrementStreamableBytesForTree(streamableDelta);
+            return window;
+        }
+
+        /**
+         * Returns the future for the last new frame created for this stream.
+         */
+        ChannelFuture lastNewFrame() {
+            return lastNewFrame;
         }
 
         /**
          * Returns the maximum writable window (minimum of the stream and connection windows).
          */
         int writableWindow() {
-            return min(streamWindow, connectionWindow());
+            return min(window, connectionWindow());
         }
 
         /**
-         * Returns the number of pending bytes for this node that will fit within the
-         * {@link #streamWindow}. This is used for the priority algorithm to determine the aggregate
-         * total for {@link #priorityBytes} at each node. Each node only takes into account it's
-         * stream window so that when a change occurs to the connection window, these values need
-         * not change (i.e. no tree traversal is required).
+         * Returns the number of pending bytes for this node that will fit within the {@link #window}. This is used for
+         * the priority algorithm to determine the aggregate total for {@link #priorityBytes} at each node. Each node
+         * only takes into account it's stream window so that when a change occurs to the connection window, these
+         * values need not change (i.e. no tree traversal is required).
          */
         int streamableBytes() {
-            return max(0, min(pendingBytes, streamWindow));
+            return max(0, min(pendingBytes, window));
         }
 
-        /**
-         * The aggregate total of all {@link #streamableBytes()} for subtree rooted at this node.
-         */
-        int priorityBytes() {
-            return priorityBytes;
-        }
-
-        /**
-         * Used by the priority algorithm to allocate bytes to this stream.
-         */
-        void allocatePriorityBytes(int bytes) {
-            allocatedPriorityBytes += bytes;
-        }
-
-        /**
-         * Used by the priority algorithm to get the intermediate allocation of bytes to this
-         * stream.
-         */
-        int allocatedPriorityBytes() {
-            return allocatedPriorityBytes;
-        }
-
-        /**
-         * Used by the priority algorithm to determine the number of writable bytes that have not
-         * yet been allocated.
-         */
-        int unallocatedPriorityBytes() {
-            return priorityBytes - allocatedPriorityBytes;
+        int streamableBytesForTree() {
+            return streamableBytesForTree;
         }
 
         /**
          * Creates a new frame with the given values but does not add it to the pending queue.
          */
-        Frame newFrame(ByteBuf data, int padding, boolean endStream, boolean endSegment,
-                boolean compressed, FrameWriter writer) {
-            return new Frame(data, padding, endStream, endSegment, compressed, writer);
+        private Frame newFrame(final ChannelPromise promise, ByteBuf data, int padding, boolean endStream) {
+            // Store this as the future for the most recent write attempt.
+            lastNewFrame = promise;
+            return new Frame(new SimplePromiseAggregator(promise), data, padding, endStream);
         }
 
         /**
@@ -520,81 +463,71 @@ public class DefaultHttp2OutboundFlowController implements Http2OutboundFlowCont
         }
 
         /**
-         * Returns the the head of the pending queue, or {@code null} if empty or the current window
-         * size is zero.
+         * Returns the the head of the pending queue, or {@code null} if empty.
          */
-        Frame peek() {
-            if (streamWindow > 0) {
-                return pendingWriteQueue.peek();
-            }
-            return null;
+        private Frame peek() {
+            return pendingWriteQueue.peek();
         }
 
         /**
          * Clears the pending queue and writes errors for each remaining frame.
          */
-        void clear() {
+        private void clear() {
             for (;;) {
                 Frame frame = pendingWriteQueue.poll();
                 if (frame == null) {
                     break;
                 }
-                frame.writeError(format(STREAM_CLOSED,
+                frame.writeError(streamError(stream.id(), INTERNAL_ERROR,
                         "Stream closed before write could take place"));
             }
         }
 
         /**
-         * Writes up to the number of bytes from the pending queue. May write less if limited by the
-         * writable window, by the number of pending writes available, or because a frame does not
-         * support splitting on arbitrary boundaries.
+         * Writes up to the number of bytes from the pending queue. May write less if limited by the writable window, by
+         * the number of pending writes available, or because a frame does not support splitting on arbitrary
+         * boundaries.
          */
-        int writeBytes(int bytes) throws Http2Exception {
-            int bytesWritten = 0;
-            if (isMarkedForRemoval()) {
-                return bytesWritten;
+        private int writeBytes(int bytes) {
+            if (!stream.localSideOpen()) {
+                return 0;
             }
 
+            int bytesAttempted = 0;
             int maxBytes = min(bytes, writableWindow());
-            while (bytesWritten < maxBytes && hasFrame()) {
+            while (hasFrame()) {
                 Frame pendingWrite = peek();
                 if (maxBytes >= pendingWrite.size()) {
                     // Window size is large enough to send entire data frame
-                    bytesWritten += pendingWrite.size();
+                    bytesAttempted += pendingWrite.size();
                     pendingWrite.write();
+                } else if (maxBytes <= 0) {
+                    // No data from the current frame can be written - we're done.
+                    // We purposely check this after first testing the size of the
+                    // pending frame to properly handle zero-length frame.
+                    break;
                 } else {
                     // We can send a partial frame
                     Frame partialFrame = pendingWrite.split(maxBytes);
-                    bytesWritten += partialFrame.size();
+                    bytesAttempted += partialFrame.size();
                     partialFrame.write();
                 }
 
                 // Update the threshold.
-                maxBytes = min(bytes - bytesWritten, writableWindow());
+                maxBytes = min(bytes - bytesAttempted, writableWindow());
             }
-            return bytesWritten;
+            return bytesAttempted;
         }
 
         /**
-         * Increments the number of pending bytes for this node. If there was any change to the
-         * number of bytes that fit into the stream window, then {@link #incrementPriorityBytes} to
-         * recursively update this branch of the priority tree.
+         * Recursively increments the streamable bytes for this branch in the priority tree starting at the current
+         * node.
          */
-        private void incrementPendingBytes(int numBytes) {
-            int previouslyStreamable = streamableBytes();
-            pendingBytes += numBytes;
-            incrementPriorityBytes(streamableBytes() - previouslyStreamable);
-        }
-
-        /**
-         * Recursively increments the priority bytes for this branch in the priority tree starting
-         * at the current node.
-         */
-        private void incrementPriorityBytes(int numBytes) {
+        private void incrementStreamableBytesForTree(int numBytes) {
             if (numBytes != 0) {
-                priorityBytes += numBytes;
-                if (!priority.isRoot()) {
-                    priority.parent().data().incrementPriorityBytes(numBytes);
+                streamableBytesForTree += numBytes;
+                if (!stream.isRoot()) {
+                    state(stream.parent()).incrementStreamableBytesForTree(numBytes);
                 }
             }
         }
@@ -603,26 +536,27 @@ public class DefaultHttp2OutboundFlowController implements Http2OutboundFlowCont
          * A wrapper class around the content of a data frame.
          */
         private final class Frame {
-            private final ByteBuf data;
-            private final int padding;
-            private final boolean endStream;
-            private final boolean endSegment;
-            private final boolean compressed;
-            private final FrameWriter writer;
-            private boolean enqueued;
+            final ByteBuf data;
+            final boolean endStream;
+            final SimplePromiseAggregator promiseAggregator;
+            final ChannelPromise promise;
+            int padding;
+            boolean enqueued;
 
-            Frame(ByteBuf data, int padding, boolean endStream, boolean endSegment,
-                    boolean compressed, FrameWriter writer) {
+            Frame(SimplePromiseAggregator promiseAggregator, ByteBuf data, int padding, boolean endStream) {
                 this.data = data;
                 this.padding = padding;
                 this.endStream = endStream;
-                this.endSegment = endSegment;
-                this.compressed = compressed;
-                this.writer = writer;
+                this.promiseAggregator = promiseAggregator;
+                promise = ctx.newPromise();
+                promiseAggregator.add(promise);
             }
 
+            /**
+             * Gets the total size (in bytes) of this frame including the data and padding.
+             */
             int size() {
-                return data.readableBytes();
+                return data.readableBytes() + padding;
             }
 
             void enqueue() {
@@ -631,55 +565,101 @@ public class DefaultHttp2OutboundFlowController implements Http2OutboundFlowCont
                     pendingWriteQueue.offer(this);
 
                     // Increment the number of pending bytes for this stream.
-                    incrementPendingBytes(data.readableBytes());
+                    incrementPendingBytes(size());
                 }
             }
 
             /**
-             * Writes the frame and decrements the stream and connection window sizes. If the frame
-             * is in the pending queue, the written bytes are removed from this branch of the
-             * priority tree.
+             * Increments the number of pending bytes for this node. If there was any change to the number of bytes that
+             * fit into the stream window, then {@link #incrementStreamableBytesForTree} to recursively update this
+             * branch of the priority tree.
              */
-            void write() throws Http2Exception {
-                int dataLength = data.readableBytes();
-                connectionFlow.incrementStreamWindow(-dataLength);
-                incrementStreamWindow(-dataLength);
-                writer.writeFrame(priority.streamId(), data, padding, endStream, endSegment,
-                        compressed);
-                decrementPendingBytes(dataLength);
+            private void incrementPendingBytes(int numBytes) {
+                int previouslyStreamable = streamableBytes();
+                pendingBytes += numBytes;
+
+                int delta = streamableBytes() - previouslyStreamable;
+                incrementStreamableBytesForTree(delta);
             }
 
             /**
-             * Discards this frame, writing an error. If this frame is in the pending queue, the
-             * unwritten bytes are removed from this branch of the priority tree.
+             * Writes the frame and decrements the stream and connection window sizes. If the frame is in the pending
+             * queue, the written bytes are removed from this branch of the priority tree.
+             * <p>
+             * Note: this does not flush the {@link ChannelHandlerContext}.
+             */
+            void write() {
+                // Using a do/while loop because if the buffer is empty we still need to call
+                // the writer once to send the empty frame.
+                final Http2FrameSizePolicy frameSizePolicy = frameWriter.configuration().frameSizePolicy();
+                do {
+                    int bytesToWrite = size();
+                    int frameBytes = min(bytesToWrite, frameSizePolicy.maxFrameSize());
+                    if (frameBytes == bytesToWrite) {
+                        // All the bytes fit into a single HTTP/2 frame, just send it all.
+                        try {
+                            connectionState().incrementStreamWindow(-bytesToWrite);
+                            incrementStreamWindow(-bytesToWrite);
+                        } catch (Http2Exception e) {
+                            // Should never get here since we're decrementing.
+                            throw new AssertionError("Invalid window state when writing frame: " + e.getMessage());
+                        }
+                        frameWriter.writeData(ctx, stream.id(), data, padding, endStream, promise);
+                        frameSent = true;
+                        decrementPendingBytes(bytesToWrite);
+                        if (enqueued) {
+                            // It's enqueued - remove it from the head of the pending write queue.
+                            pendingWriteQueue.remove();
+                        }
+                        return;
+                    }
+
+                    // Split a chunk that will fit into a single HTTP/2 frame and write it.
+                    Frame frame = split(frameBytes);
+                    frame.write();
+                } while (size() > 0);
+            }
+
+            /**
+             * Discards this frame, writing an error. If this frame is in the pending queue, the unwritten bytes are
+             * removed from this branch of the priority tree.
              */
             void writeError(Http2Exception cause) {
-                decrementPendingBytes(data.readableBytes());
+                decrementPendingBytes(size());
                 data.release();
-                writer.setFailure(cause);
+                promise.setFailure(cause);
             }
 
             /**
-             * Creates a new frame that is a view of this frame's data buffer starting at the
-             * current read index with the given number of bytes. The reader index on the input
-             * frame is then advanced by the number of bytes. The returned frame will not have
-             * end-of-stream set and it will not be automatically placed in the pending queue.
+             * Creates a new frame that is a view of this frame's data. The {@code maxBytes} are first split from the
+             * data buffer. If not all the requested bytes are available, the remaining bytes are then split from the
+             * padding (if available).
              *
              * @param maxBytes the maximum number of bytes that is allowed in the created frame.
              * @return the partial frame.
              */
             Frame split(int maxBytes) {
-                // TODO: Should padding be included in the chunks or only the last frame?
-                maxBytes = min(maxBytes, data.readableBytes());
-                Frame frame = new Frame(data.readSlice(maxBytes).retain(), 0, false, false, compressed,
-                        writer);
-                decrementPendingBytes(maxBytes);
+                // The requested maxBytes should always be less than the size of this frame.
+                assert maxBytes < size() : "Attempting to split a frame for the full size.";
+
+                // Get the portion of the data buffer to be split. Limit to the readable bytes.
+                int dataSplit = min(maxBytes, data.readableBytes());
+
+                // Split any remaining bytes from the padding.
+                int paddingSplit = min(maxBytes - dataSplit, padding);
+
+                ByteBuf splitSlice = data.readSlice(dataSplit).retain();
+                padding -= paddingSplit;
+
+                Frame frame = new Frame(promiseAggregator, splitSlice, paddingSplit, false);
+
+                int totalBytesSplit = dataSplit + paddingSplit;
+                decrementPendingBytes(totalBytesSplit);
                 return frame;
             }
 
             /**
-             * If this frame is in the pending queue, decrements the number of pending bytes for the
-             * stream.
+             * If this frame is in the pending queue, decrements the number of pending bytes for the stream.
              */
             void decrementPendingBytes(int bytes) {
                 if (enqueued) {
@@ -690,54 +670,31 @@ public class DefaultHttp2OutboundFlowController implements Http2OutboundFlowCont
     }
 
     /**
-     * Controls garbage collection for priorities that have been marked for removal.
+     * Lightweight promise aggregator.
      */
-    private final class GarbageCollector implements Runnable {
-
-        private final Queue<Priority<FlowState>> garbage;
-        private long lastGarbageCollection;
-
-        GarbageCollector() {
-            garbage = new ArrayDeque<Priority<FlowState>>();
-        }
-
-        void add(Priority<FlowState> priority) {
-            priority.data().removalTime = System.nanoTime();
-            garbage.add(priority);
-        }
-
-        /**
-         * Removes any priorities from the tree that were marked for removal greater than
-         * {@link #GARBAGE_COLLECTION_INTERVAL} milliseconds ago. Garbage collection will run at most on
-         * the interval {@link #GARBAGE_COLLECTION_INTERVAL}, so calling it more frequently will have no
-         * effect.
-         */
-        @Override
-        public void run() {
-            if (garbage.isEmpty()) {
-                return;
-            }
-
-            long time = System.nanoTime();
-            if (time - lastGarbageCollection < GARBAGE_COLLECTION_INTERVAL) {
-                // Only run the garbage collection on the threshold interval (at most).
-                return;
-            }
-            lastGarbageCollection = time;
-
-            for (;;) {
-                Priority<FlowState> next = garbage.peek();
-                if (next == null) {
-                    break;
-                }
-                long removeTime = next.data().removalTime();
-                if (time - removeTime > GARBAGE_COLLECTION_INTERVAL) {
-                    Priority<FlowState> priority = garbage.remove();
-                    priorityTree.remove(priority.streamId());
+    private class SimplePromiseAggregator {
+        final ChannelPromise promise;
+        final AtomicInteger awaiting = new AtomicInteger();
+        final ChannelFutureListener listener = new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) throws Exception {
+                if (!future.isSuccess()) {
+                    promise.tryFailure(future.cause());
                 } else {
-                    break;
+                    if (awaiting.decrementAndGet() == 0) {
+                        promise.trySuccess();
+                    }
                 }
             }
+        };
+
+        SimplePromiseAggregator(ChannelPromise promise) {
+            this.promise = promise;
+        }
+
+        void add(ChannelPromise promise) {
+            awaiting.incrementAndGet();
+            promise.addListener(listener);
         }
     }
 }

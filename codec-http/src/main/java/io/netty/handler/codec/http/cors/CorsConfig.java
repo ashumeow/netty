@@ -16,8 +16,9 @@
 package io.netty.handler.codec.http.cors;
 
 import io.netty.handler.codec.http.DefaultHttpHeaders;
+import io.netty.handler.codec.http.EmptyHttpHeaders;
 import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.handler.codec.http.HttpHeaders.Names;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.util.internal.StringUtil;
 
@@ -202,15 +203,15 @@ public final class CorsConfig {
      */
     public HttpHeaders preflightResponseHeaders() {
         if (preflightHeaders.isEmpty()) {
-            return HttpHeaders.EMPTY_HEADERS;
+            return EmptyHttpHeaders.INSTANCE;
         }
         final HttpHeaders preflightHeaders = new DefaultHttpHeaders();
         for (Entry<CharSequence, Callable<?>> entry : this.preflightHeaders.entrySet()) {
             final Object value = getValue(entry.getValue());
             if (value instanceof Iterable) {
-                preflightHeaders.add(entry.getKey(), (Iterable<?>) value);
+                preflightHeaders.addObject(entry.getKey(), (Iterable<?>) value);
             } else {
-                preflightHeaders.add(entry.getKey(), value);
+                preflightHeaders.addObject(entry.getKey(), value);
             }
         }
         return preflightHeaders;
@@ -266,7 +267,7 @@ public final class CorsConfig {
      * @return {@link Builder} to support method chaining.
      */
     public static Builder withOrigin(final String origin) {
-        if (origin.equals("*")) {
+        if ("*".equals(origin)) {
             return new Builder();
         }
         return new Builder(origin);
@@ -510,8 +511,8 @@ public final class CorsConfig {
          */
         public CorsConfig build() {
             if (preflightHeaders.isEmpty() && !noPreflightHeaders) {
-                preflightHeaders.put(Names.DATE, new DateValueGenerator());
-                preflightHeaders.put(Names.CONTENT_LENGTH, new ConstantValueGenerator("0"));
+                preflightHeaders.put(HttpHeaderNames.DATE, new DateValueGenerator());
+                preflightHeaders.put(HttpHeaderNames.CONTENT_LENGTH, new ConstantValueGenerator("0"));
             }
             return new CorsConfig(this);
         }

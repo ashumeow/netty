@@ -16,9 +16,9 @@
 package io.netty.channel.epoll;
 
 import io.netty.bootstrap.Bootstrap;
-import io.netty.bootstrap.ChannelFactory;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFactory;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.socket.InternetProtocolFamily;
 import io.netty.channel.socket.nio.NioDatagramChannel;
@@ -27,7 +27,7 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.testsuite.transport.TestsuitePermutation;
 import io.netty.testsuite.transport.TestsuitePermutation.BootstrapFactory;
 import io.netty.testsuite.transport.socket.SocketTestPermutation;
-import io.netty.util.concurrent.DefaultThreadFactory;
+import io.netty.util.concurrent.DefaultExecutorServiceFactory;
 
 import java.util.Arrays;
 import java.util.List;
@@ -37,9 +37,9 @@ class EpollSocketTestPermutation extends SocketTestPermutation {
     static final SocketTestPermutation INSTANCE = new EpollSocketTestPermutation();
 
     static final EventLoopGroup EPOLL_BOSS_GROUP =
-            new EpollEventLoopGroup(BOSSES, new DefaultThreadFactory("testsuite-epoll-boss", true));
+            new EpollEventLoopGroup(BOSSES, new DefaultExecutorServiceFactory("testsuite-epoll-boss"));
     static final EventLoopGroup EPOLL_WORKER_GROUP =
-            new EpollEventLoopGroup(WORKERS, new DefaultThreadFactory("testsuite-epoll-worker", true));
+            new EpollEventLoopGroup(WORKERS, new DefaultExecutorServiceFactory("testsuite-epoll-worker"));
 
     @Override
     public List<TestsuitePermutation.BootstrapComboFactory<ServerBootstrap, Bootstrap>> socket() {
